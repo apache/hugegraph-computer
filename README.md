@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202-0E78BA.svg)](https://www.apache.org/licenses/LICENSE-2.0.html)
 [![Build Status](https://github.com/apache/hugegraph-computer/actions/workflows/computer-ci.yml/badge.svg)](https://github.com/apache/hugegraph-computer/actions/workflows/computer-ci.yml)
-[![codecov](https://codecov.io/gh/apache/incubator-hugegraph-computer/branch/master/graph/badge.svg)](https://codecov.io/gh/apache/incubator-hugegraph-computer)
+[![codecov](https://codecov.io/gh/apache/hugegraph-computer/branch/master/graph/badge.svg)](https://codecov.io/gh/apache/hugegraph-computer)
 [![Docker Pulls](https://img.shields.io/docker/pulls/hugegraph/hugegraph-computer)](https://hub.docker.com/repository/docker/hugegraph/hugegraph-computer)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/apache/hugegraph-computer)
 
@@ -231,7 +231,7 @@ For large-scale distributed graph processing on Kubernetes or YARN clusters, see
 
 1. [hugegraph](https://github.com/apache/hugegraph) - Graph database core (Server + PD + Store)
 2. [hugegraph-toolchain](https://github.com/apache/hugegraph-toolchain) - Graph tools (Loader/Hubble/Tools/Client)
-3. [hugegraph-ai](https://github.com/apache/incubator-hugegraph-ai) - Graph AI/LLM/Knowledge Graph system
+3. [hugegraph-ai](https://github.com/apache/hugegraph-ai) - Graph AI/LLM/Knowledge Graph system
 4. [hugegraph-website](https://github.com/apache/hugegraph-doc) - Documentation and website
 
 ## Contributing
@@ -245,15 +245,15 @@ We recommend using [GitHub Desktop](https://desktop.github.com/) to simplify the
 
 Thank you to all contributors!
 
-[![contributors graph](https://contrib.rocks/image?repo=apache/hugegraph-computer)](https://github.com/apache/incubator-hugegraph-computer/graphs/contributors)
+[![contributors graph](https://contrib.rocks/image?repo=apache/hugegraph-computer)](https://github.com/apache/hugegraph-computer/graphs/contributors)
 
 ## License
 
-HugeGraph-Computer is licensed under [Apache 2.0 License](https://github.com/apache/incubator-hugegraph-computer/blob/master/LICENSE).
+HugeGraph-Computer is licensed under [Apache 2.0 License](https://github.com/apache/hugegraph-computer/blob/master/LICENSE).
 
 ## Contact Us
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/apache/incubator-hugegraph-computer/issues)
+- **GitHub Issues**: [Report bugs or request features](https://github.com/apache/hugegraph-computer/issues)
 - **Email**: [dev@hugegraph.apache.org](mailto:dev@hugegraph.apache.org) ([subscribe first](https://hugegraph.apache.org/docs/contribution-guidelines/subscribe/))
 - **Slack**: [Join ASF HugeGraph channel](https://the-asf.slack.com/archives/C059UU2FJ23)
 - **WeChat**: Scan QR code to follow Apache HugeGraph official account

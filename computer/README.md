@@ -527,4 +527,4 @@ See the main [Contributing Guide](../README.md#contributing) for how to contribu
 
 ## License
 
-HugeGraph-Computer is licensed under [Apache 2.0 License](https://github.com/apache/incubator-hugegraph-computer/blob/master/LICENSE).
+HugeGraph-Computer is licensed under [Apache 2.0 License](https://github.com/apache/hugegraph-computer/blob/master/LICENSE).
