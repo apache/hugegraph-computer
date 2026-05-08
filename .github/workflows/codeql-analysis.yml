@@ -75,14 +75,13 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
 
-  dependency-review:
-    # Skip for now because dependency review is unsupported until the
-    # repository dependency graph is enabled.
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: 'Checkout Repository'
-        uses: actions/checkout@v5
-      - name: 'Dependency Review'
-        uses: actions/dependency-review-action@v4
+  # Disabled for now because dependency review is unsupported until the
+  # repository dependency graph is enabled.
+  # dependency-review:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: 'Checkout Repository'
+  #       uses: actions/checkout@v5
+  #     - name: 'Dependency Review'
+  #       uses: actions/dependency-review-action@v4
         
