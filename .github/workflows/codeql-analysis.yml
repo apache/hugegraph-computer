@@ -76,6 +76,9 @@ jobs:
         uses: github/codeql-action/analyze@v3
 
   dependency-review:
+    # Skip for now because dependency review is unsupported until the
+    # repository dependency graph is enabled.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: 'Checkout Repository'
