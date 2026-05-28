@@ -176,6 +176,6 @@
 })();
 
 $(function () {
-    vermeer.queryGraphs ();
+    vermeer.queryGraphs();
     vermeer.queryTasks();
 });

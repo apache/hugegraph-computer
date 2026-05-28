@@ -5,7 +5,6 @@
   "description": "Frontend dependencies for Vermeer UI (downloaded at build time for ASF compliance)",
   "dependencies": {
     "jquery": "3.5.1",
-    "bootstrap": "4.3.1",
-    "popper.js": "1.14.7"
+    "bootstrap": "4.3.1"
   }
 }

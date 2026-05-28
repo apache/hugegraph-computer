@@ -73,8 +73,7 @@ clean-all: clean
 	@rm -rf tools/protoc/*/include
 	@echo "Cleaning downloaded UI assets..."
 	@rm -rf ui/node_modules ui/package-lock.json
-	@rm -rf ui/ui/lib/bootstrap-4.3.1-dist ui/ui/lib/bootstrap4-glyphicons
-	@rm -f ui/ui/lib/jquery-3.5.1.min.js ui/ui/lib/jquery-license
+	@rm -rf ui/ui/lib
 	@echo "All clean completed!"
 
 # Help

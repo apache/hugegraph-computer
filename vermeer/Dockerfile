@@ -19,8 +19,8 @@ RUN apk add --no-cache npm bash curl
 COPY ./ /src/
 WORKDIR /src/
 ENV CGO_ENABLED="0"
-RUN ./scripts/download_ui_assets.sh && ls -la ui/ui/lib/
-RUN cd asset && go generate && wc -l assets_vfsdata.go
+RUN ./scripts/download_ui_assets.sh
+RUN cd asset && go generate
 RUN go build -o /go/bin/app
 
 FROM alpine
