@@ -42,13 +42,9 @@ download-ui-assets:
 
 # Generate assets (vfsdata.go for web UI)
 generate-assets: download-ui-assets
-	@if [ ! -f "asset/assets_vfsdata.go" ]; then \
-		echo "Generating assets..."; \
-		cd asset && go generate || (echo "Failed to generate assets" && exit 1); \
-		echo "Assets generated successfully!"; \
-	else \
-		echo "Assets already generated, skipping."; \
-	fi
+	@echo "Generating assets..."
+	@cd asset && go generate || (echo "Failed to generate assets" && exit 1)
+	@echo "Assets generated successfully!"
 
 # Build vermeer binary
 build:
@@ -82,7 +78,8 @@ clean-all: clean
 	@echo "Cleaning downloaded UI assets..."
 	@rm -rf ui/node_modules ui/package-lock.json
 	@rm -f ui/ui/lib/.downloaded ui/ui/lib/jquery-license
-	@rm -rf ui/ui/lib/bootstrap-4.3.1-dist ui/ui/lib/bootstrap4-glyphicons
+	@rm -rf ui/ui/lib/bootstrap-*-dist ui/ui/lib/bootstrap4-glyphicons
+	@rm -f ui/ui/lib/jquery-*.min.js
 	@echo "All clean completed!"
 
 # Help

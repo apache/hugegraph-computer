@@ -62,9 +62,13 @@ download_file() {
 main() {
     log_info "Downloading UI assets..."
 
-    # Check npm
+    # Check npm and node
     if ! command -v npm &> /dev/null; then
         log_error "npm is required but not installed. Please install Node.js/npm first."
+        exit 1
+    fi
+    if ! command -v node &> /dev/null; then
+        log_error "node is required but not installed. Please install Node.js first."
         exit 1
     fi
 
