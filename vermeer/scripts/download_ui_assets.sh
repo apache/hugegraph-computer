@@ -157,6 +157,12 @@ JQLICENSE
     download_file "$GLYPHICONS_BASE/maps/glyphicons-fontawesome.min.css" \
         "$LIB_DIR/bootstrap4-glyphicons/maps/glyphicons-fontawesome.min.css"
 
+    # Download bootstrap4-glyphicons LICENSE for release metadata
+    GLYPHICONS_LICENSE_URL="https://raw.githubusercontent.com/Darkseal/bootstrap4-glyphicons/${GLYPHICONS_COMMIT}/LICENSE"
+    if ! curl -sL -f "$GLYPHICONS_LICENSE_URL" -o "$LIB_DIR/bootstrap4-glyphicons/LICENSE" 2>/dev/null; then
+        log_warn "Could not download bootstrap4-glyphicons LICENSE file (repo may not have one)"
+    fi
+
     # Stamp file for incremental builds
     touch "$LIB_DIR/.downloaded"
 

@@ -1,0 +1,44 @@
+Apache HugeGraph - Vermeer
+Copyright 2022-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+The initial codebase was donated to the ASF by HugeGraph Authors, copyright 2017-2021.
+
+========================================================================
+This product bundles the following third-party frontend assets:
+========================================================================
+
+jQuery 3.5.1
+  Copyright JS Foundation and other contributors
+  https://jquery.com/
+  Licensed under the MIT License
+
+Bootstrap 4.3.1
+  Copyright 2011-2019 Twitter, Inc.
+  Copyright 2011-2019 The Bootstrap Authors
+  https://getbootstrap.com/
+  Licensed under the MIT License
+
+bootstrap4-glyphicons
+  Copyright 2018 Darkseal / Ryadel
+  https://github.com/Darkseal/bootstrap4-glyphicons
+  Licensed under the Apache License, Version 2.0
+
+Bootstrap 3 Glyphicons CSS (bundled within bootstrap4-glyphicons)
+  Copyright 2011-2018 Twitter, Inc.
+  https://getbootstrap.com/
+  Licensed under the MIT License
+
+Font Awesome 5 Free (fonts and CSS bundled within bootstrap4-glyphicons)
+  Copyright 2018 Fonticons, Inc.
+  https://fontawesome.com/
+  Font files licensed under the SIL Open Font License 1.1
+  CSS and Less files licensed under the MIT License
+  Icons licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+
+Glyphicons Halflings font files (bundled within bootstrap4-glyphicons)
+  Copyright 2011-2018 Twitter, Inc.
+  https://glyphicons.com/
+  Licensed under the MIT License
