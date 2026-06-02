@@ -1,0 +1,109 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one or more
+# contributor license agreements.  See the NOTICE file distributed with
+# this work for additional information regarding copyright ownership.
+# The ASF licenses this file to You under the Apache License, Version 2.0
+# (the "License"); you may not use this file except in compliance with
+# the License.  You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+name: "Vermeer CI"
+
+on:
+  push:
+    branches:
+      - master
+      - /^release-.*$/
+    paths:
+      - vermeer/**
+      - .github/workflows/vermeer-ci.yml
+  pull_request:
+    paths:
+      - vermeer/**
+      - .github/workflows/vermeer-ci.yml
+
+defaults:
+  run:
+    working-directory: vermeer
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vermeer-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-go-${{ hashFiles('vermeer/go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Download UI assets
+        run: ./scripts/download_ui_assets.sh
+
+      - name: Generate embedded assets
+        run: cd asset && go generate
+
+      - name: Build
+        run: CGO_ENABLED=0 go build -o vermeer
+
+      - name: Verify binary exists
+        run: test -x vermeer
+
+      - name: Verify release metadata exists
+        run: |
+          test -f release-docs/LICENSE
+          test -f release-docs/NOTICE
+          test -d release-docs/licenses
+
+  vermeer-docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (dry-run)
+        uses: docker/build-push-action@v6
+        with:
+          context: vermeer
+          push: false
+          tags: vermeer:ci-check
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify release metadata in image
+        run: |
+          docker run --rm --entrypoint test vermeer:ci-check -f /go/bin/release-docs/LICENSE
+          docker run --rm --entrypoint test vermeer:ci-check -f /go/bin/release-docs/NOTICE
+          docker run --rm --entrypoint test vermeer:ci-check -d /go/bin/release-docs/licenses
