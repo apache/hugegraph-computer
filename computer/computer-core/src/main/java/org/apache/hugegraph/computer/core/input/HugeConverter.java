@@ -42,6 +42,12 @@ import org.apache.hugegraph.util.SplicingIdGenerator;
 
 public final class HugeConverter {
 
+    private static final int LEGACY_EDGE_ID_PARTS = 4;
+    private static final int PARENT_EDGE_ID_PARTS = 5;
+    private static final int DIRECTIONAL_EDGE_ID_PARTS = 6;
+    private static final int PARENT_EDGE_NAME_INDEX = 3;
+    private static final int DIRECTIONAL_EDGE_NAME_INDEX = 4;
+
     private static final GraphFactory GRAPH_FACTORY =
                                       ComputerContext.instance().graphFactory();
 
@@ -107,13 +113,18 @@ public final class HugeConverter {
         }
 
         String[] parts = SplicingIdGenerator.split(edgeId);
-        if (parts.length == 4) {
-            return parts[2];
-        } else if (parts.length == 5) {
-            return parts[3];
-        } else if (parts.length == 6) {
-            return parts[4];
+        if (parts.length == LEGACY_EDGE_ID_PARTS) {
+            return edge.name();
+        } else if (parts.length == PARENT_EDGE_ID_PARTS) {
+            return parts[PARENT_EDGE_NAME_INDEX];
+        } else if (parts.length == DIRECTIONAL_EDGE_ID_PARTS &&
+                   isEdgeDirection(parts[1])) {
+            return parts[DIRECTIONAL_EDGE_NAME_INDEX];
         }
         return edge.name();
+    }
+
+    private static boolean isEdgeDirection(String part) {
+        return "EDGE_OUT".equals(part) || "EDGE_IN".equals(part);
     }
 }

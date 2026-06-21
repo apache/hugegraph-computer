@@ -22,9 +22,7 @@ jobs:
       TRAVIS_DIR: computer-dist/src/assembly/travis
       BSP_ETCD_URL: http://localhost:2579
       KUBERNETES_VERSION: 1.20.1
-      # TODO: adapt the HugeGraph Server/Loader version to 1.5.0 (EdgeID has 5 parts now)
-      # NOTE: Remember to adaptor/update the version before new release
-      GRAPH_ENV_VERSION: 1.3.0
+      GRAPH_ENV_VERSION: 1.7.0
 
     steps:
       - name: Checkout

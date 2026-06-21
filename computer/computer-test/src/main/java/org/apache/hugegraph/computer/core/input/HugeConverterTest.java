@@ -129,6 +129,15 @@ public class HugeConverterTest extends UnitTestBase {
     }
 
     @Test
+    public void testConvertEdgeNameWithLegacyFourPartEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S1:178201>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
     public void testConvertEdgeNameWithFivePartEdgeId() {
         Edge edge = new Edge("belong_to_el_defect");
         edge.id("S1:178201>5>5>参数标准!3BA0>S4:239464");
@@ -141,6 +150,15 @@ public class HugeConverterTest extends UnitTestBase {
     public void testConvertEdgeNameWithSixPartEdgeId() {
         Edge edge = new Edge("belong_to_el_defect");
         edge.id("S1:178201>EDGE_OUT>5>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithSixPartInEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S4:239464>EDGE_IN>5>5>参数标准!3BA0>S1:178201");
 
         Assert.assertEquals("参数标准!3BA0",
                             HugeConverter.convertEdgeName(edge));
