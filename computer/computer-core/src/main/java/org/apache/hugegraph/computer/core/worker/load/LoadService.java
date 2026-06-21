@@ -238,7 +238,8 @@ public class LoadService {
             Properties properties = HugeConverter.convertProperties(
                                     edge.properties());
             Edge computerEdge = graphFactory.createEdge(edge.label(),
-                                                        edge.name(), targetId
+                                                        HugeConverter.convertEdgeName(edge),
+                                                        targetId
             );
             computerEdge.label(edge.label());
             computerEdge.properties(properties);

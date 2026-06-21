@@ -36,7 +36,9 @@ import org.apache.hugegraph.computer.core.graph.value.LongValue;
 import org.apache.hugegraph.computer.core.graph.value.NullValue;
 import org.apache.hugegraph.computer.core.graph.value.StringValue;
 import org.apache.hugegraph.computer.core.graph.value.Value;
+import org.apache.hugegraph.structure.graph.Edge;
 import org.apache.hugegraph.util.E;
+import org.apache.hugegraph.util.SplicingIdGenerator;
 
 public final class HugeConverter {
 
@@ -95,5 +97,23 @@ public final class HugeConverter {
             properties.put(key, value);
         }
         return properties;
+    }
+
+    public static String convertEdgeName(Edge edge) {
+        E.checkArgumentNotNull(edge, "The edge can't be null");
+        String edgeId = edge.id();
+        if (edgeId == null) {
+            return edge.name();
+        }
+
+        String[] parts = SplicingIdGenerator.split(edgeId);
+        if (parts.length == 4) {
+            return parts[2];
+        } else if (parts.length == 5) {
+            return parts[3];
+        } else if (parts.length == 6) {
+            return parts[4];
+        }
+        return edge.name();
     }
 }

@@ -35,6 +35,7 @@ import org.apache.hugegraph.computer.core.graph.value.NullValue;
 import org.apache.hugegraph.computer.core.graph.value.StringValue;
 import org.apache.hugegraph.computer.core.graph.value.ValueType;
 import org.apache.hugegraph.computer.suite.unit.UnitTestBase;
+import org.apache.hugegraph.structure.graph.Edge;
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Test;
 
@@ -125,5 +126,23 @@ public class HugeConverterTest extends UnitTestBase {
 
         Assert.assertEquals(properties,
                             HugeConverter.convertProperties(rawProperties));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithFivePartEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S1:178201>5>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithSixPartEdgeId() {
+        Edge edge = new Edge("belong_to_el_defect");
+        edge.id("S1:178201>EDGE_OUT>5>5>参数标准!3BA0>S4:239464");
+
+        Assert.assertEquals("参数标准!3BA0",
+                            HugeConverter.convertEdgeName(edge));
     }
 }
