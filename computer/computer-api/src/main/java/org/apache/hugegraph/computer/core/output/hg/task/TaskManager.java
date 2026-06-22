@@ -28,8 +28,8 @@ import org.apache.hugegraph.computer.core.config.Config;
 import org.apache.hugegraph.computer.core.output.hg.exceptions.WriteBackException;
 import org.apache.hugegraph.computer.core.output.hg.metrics.LoadSummary;
 import org.apache.hugegraph.computer.core.output.hg.metrics.Printer;
+import org.apache.hugegraph.computer.core.util.HugeClientUtil;
 import org.apache.hugegraph.driver.HugeClient;
-import org.apache.hugegraph.driver.HugeClientBuilder;
 import org.apache.hugegraph.structure.graph.Vertex;
 import org.apache.hugegraph.util.ExecutorUtil;
 import org.apache.hugegraph.util.Log;
@@ -58,7 +58,8 @@ public final class TaskManager {
         String graph = config.get(ComputerOptions.HUGEGRAPH_GRAPH_NAME);
         String username = config.get(ComputerOptions.HUGEGRAPH_USERNAME);
         String password = config.get(ComputerOptions.HUGEGRAPH_PASSWORD);
-        this.client = new HugeClientBuilder(url, graph).configUser(username, password).build();
+        this.client = HugeClientUtil.newHugeClient(url, graph, username,
+                                                   password);
         // Try to make all batch threads running and don't wait for producer
         this.batchSemaphore = new Semaphore(this.batchSemaphoreNum());
         /*

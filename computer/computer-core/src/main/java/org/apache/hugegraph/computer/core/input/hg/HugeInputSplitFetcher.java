@@ -24,8 +24,8 @@ import org.apache.hugegraph.computer.core.config.ComputerOptions;
 import org.apache.hugegraph.computer.core.config.Config;
 import org.apache.hugegraph.computer.core.input.InputSplit;
 import org.apache.hugegraph.computer.core.input.InputSplitFetcher;
+import org.apache.hugegraph.computer.core.util.HugeClientUtil;
 import org.apache.hugegraph.driver.HugeClient;
-import org.apache.hugegraph.driver.HugeClientBuilder;
 import org.apache.hugegraph.structure.graph.Shard;
 import org.apache.hugegraph.util.E;
 
@@ -41,9 +41,8 @@ public class HugeInputSplitFetcher implements InputSplitFetcher {
         String username = config.get(ComputerOptions.HUGEGRAPH_USERNAME);
         String password = config.get(ComputerOptions.HUGEGRAPH_PASSWORD);
         int timeout = config.get(ComputerOptions.INPUT_SPLIT_FETCH_TIMEOUT);
-        this.client = new HugeClientBuilder(url, graph).configUser(username, password)
-                                                       .configTimeout(timeout)
-                                                       .build();
+        this.client = HugeClientUtil.newHugeClient(url, graph, username,
+                                                   password, timeout);
     }
 
     @Override

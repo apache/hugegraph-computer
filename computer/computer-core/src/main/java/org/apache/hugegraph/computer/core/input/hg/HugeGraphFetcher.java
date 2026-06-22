@@ -24,8 +24,8 @@ import org.apache.hugegraph.computer.core.input.GraphFetcher;
 import org.apache.hugegraph.computer.core.input.InputSplit;
 import org.apache.hugegraph.computer.core.input.VertexFetcher;
 import org.apache.hugegraph.computer.core.rpc.InputSplitRpcService;
+import org.apache.hugegraph.computer.core.util.HugeClientUtil;
 import org.apache.hugegraph.driver.HugeClient;
-import org.apache.hugegraph.driver.HugeClientBuilder;
 
 public class HugeGraphFetcher implements GraphFetcher {
 
@@ -39,7 +39,8 @@ public class HugeGraphFetcher implements GraphFetcher {
         String graph = config.get(ComputerOptions.HUGEGRAPH_GRAPH_NAME);
         String username = config.get(ComputerOptions.HUGEGRAPH_USERNAME);
         String password = config.get(ComputerOptions.HUGEGRAPH_PASSWORD);
-        this.client = new HugeClientBuilder(url, graph).configUser(username, password).build();
+        this.client = HugeClientUtil.newHugeClient(url, graph, username,
+                                                   password);
         this.vertexFetcher = new HugeVertexFetcher(config, this.client);
         this.edgeFetcher = new HugeEdgeFetcher(config, this.client);
         this.rpcService = rpcService;

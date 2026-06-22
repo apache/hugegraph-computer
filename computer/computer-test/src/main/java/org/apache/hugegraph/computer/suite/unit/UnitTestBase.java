@@ -46,6 +46,7 @@ import org.apache.hugegraph.computer.core.io.StreamGraphOutput;
 import org.apache.hugegraph.computer.core.io.Writable;
 import org.apache.hugegraph.computer.core.store.entry.EntryInput;
 import org.apache.hugegraph.computer.core.store.entry.EntryInputImpl;
+import org.apache.hugegraph.computer.core.util.HugeClientUtil;
 import org.apache.hugegraph.computer.core.util.ComputerContextUtil;
 import org.apache.hugegraph.computer.core.worker.MockComputationParams;
 import org.apache.hugegraph.config.OptionSpace;
@@ -287,7 +288,8 @@ public class UnitTestBase {
 
     protected static synchronized HugeClient client() {
         if (CLIENT == null) {
-            CLIENT = HugeClient.builder(URL, GRAPH).configUser(USERNAME, PASSWORD).build();
+            CLIENT = HugeClientUtil.newHugeClient(URL, GRAPH, USERNAME,
+                                                  PASSWORD);
         }
         return CLIENT;
     }
