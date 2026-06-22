@@ -45,6 +45,7 @@ public final class HugeConverter {
     private static final int LEGACY_EDGE_ID_PARTS = 4;
     private static final int PARENT_EDGE_ID_PARTS = 5;
     private static final int DIRECTIONAL_EDGE_ID_PARTS = 6;
+    private static final int LEGACY_EDGE_NAME_INDEX = 2;
     private static final int PARENT_EDGE_NAME_INDEX = 3;
     private static final int DIRECTIONAL_EDGE_NAME_INDEX = 4;
 
@@ -114,7 +115,7 @@ public final class HugeConverter {
 
         String[] parts = SplicingIdGenerator.split(edgeId);
         if (parts.length == LEGACY_EDGE_ID_PARTS) {
-            return edge.name();
+            return parts[LEGACY_EDGE_NAME_INDEX];
         } else if (parts.length == PARENT_EDGE_ID_PARTS) {
             return parts[PARENT_EDGE_NAME_INDEX];
         } else if (parts.length == DIRECTIONAL_EDGE_ID_PARTS &&

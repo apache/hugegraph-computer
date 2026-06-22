@@ -38,6 +38,7 @@ import org.apache.hugegraph.computer.suite.unit.UnitTestBase;
 import org.apache.hugegraph.structure.graph.Edge;
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Test;
+import org.mockito.Mockito;
 
 import com.google.common.collect.ImmutableList;
 
@@ -130,8 +131,10 @@ public class HugeConverterTest extends UnitTestBase {
 
     @Test
     public void testConvertEdgeNameWithLegacyFourPartEdgeId() {
-        Edge edge = new Edge("belong_to_el_defect");
-        edge.id("S1:178201>5>参数标准!3BA0>S4:239464");
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(
+               "S1:178201>5>参数标准!3BA0>S4:239464");
+        Mockito.when(edge.name()).thenReturn("stale_client_name");
 
         Assert.assertEquals("参数标准!3BA0",
                             HugeConverter.convertEdgeName(edge));
