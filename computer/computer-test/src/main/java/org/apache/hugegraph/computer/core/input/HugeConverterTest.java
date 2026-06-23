@@ -166,4 +166,35 @@ public class HugeConverterTest extends UnitTestBase {
         Assert.assertEquals("参数标准!3BA0",
                             HugeConverter.convertEdgeName(edge));
     }
+
+    @Test
+    public void testConvertEdgeNameWithNullEdgeId() {
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(null);
+        Mockito.when(edge.name()).thenReturn("fallback_name");
+
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithUnknownEdgeIdFormat() {
+        Edge edge = Mockito.mock(Edge.class);
+        Mockito.when(edge.id()).thenReturn(
+               "S1:178201>VERTEX>5>5>参数标准!3BA0>S4:239464");
+        Mockito.when(edge.name()).thenReturn("fallback_name");
+
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+
+        Mockito.when(edge.id()).thenReturn("S1:178201>bad>edge");
+        Assert.assertEquals("fallback_name",
+                            HugeConverter.convertEdgeName(edge));
+    }
+
+    @Test
+    public void testConvertEdgeNameWithNullEdge() {
+        Assert.assertThrows(IllegalArgumentException.class,
+                            () -> HugeConverter.convertEdgeName(null));
+    }
 }
