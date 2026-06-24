@@ -35,6 +35,9 @@ public final class HugeClientUtil {
 
     private static final AtomicBoolean COMPATIBILITY_REGISTERED =
                                       new AtomicBoolean(false);
+    private static final String EDGE_LABEL_TYPE = "edgelabel_type";
+    private static final String EDGE_LABEL_PARENT_LABEL = "parent_label";
+    private static final String EDGE_LABEL_LINKS = "links";
 
     public static HugeClient newHugeClient(String url, String graph,
                                            String username, String password) {
@@ -70,14 +73,34 @@ public final class HugeClientUtil {
                    DeserializationConfig config, BeanDescription beanDesc,
                    BeanDeserializerBuilder builder) {
                 if (EdgeLabel.class.equals(beanDesc.getBeanClass())) {
-                    builder.addIgnorable("edgelabel_type");
-                    builder.addIgnorable("parent_label");
-                    builder.addIgnorable("links");
+                    addEdgeLabelIgnorable(builder, EDGE_LABEL_TYPE,
+                                          "edgeLabelType");
+                    addEdgeLabelIgnorable(builder, EDGE_LABEL_PARENT_LABEL,
+                                          "parentLabel");
+                    addEdgeLabelIgnorable(builder, EDGE_LABEL_LINKS, "links");
                 }
                 return builder;
             }
         });
         return module;
+    }
+
+    private static void addEdgeLabelIgnorable(BeanDeserializerBuilder builder,
+                                              String jsonProperty,
+                                              String methodName) {
+        if (shouldIgnoreEdgeLabelProperty(EdgeLabel.class, methodName)) {
+            builder.addIgnorable(jsonProperty);
+        }
+    }
+
+    static boolean shouldIgnoreEdgeLabelProperty(Class<?> edgeLabelClass,
+                                                 String methodName) {
+        try {
+            edgeLabelClass.getMethod(methodName);
+            return false;
+        } catch (NoSuchMethodException ignored) {
+            return true;
+        }
     }
 
     private HugeClientUtil() {

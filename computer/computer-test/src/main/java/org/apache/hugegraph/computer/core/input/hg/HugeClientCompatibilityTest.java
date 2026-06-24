@@ -17,6 +17,8 @@
 
 package org.apache.hugegraph.computer.core.input.hg;
 
+import java.lang.reflect.Method;
+
 import org.apache.hugegraph.computer.core.util.HugeClientUtil;
 import org.apache.hugegraph.rest.RestResult;
 import org.apache.hugegraph.structure.schema.EdgeLabel;
@@ -53,5 +55,48 @@ public class HugeClientCompatibilityTest {
         Assert.assertEquals("link", edgeLabel.name());
         Assert.assertEquals("user", edgeLabel.sourceLabel());
         Assert.assertEquals("user", edgeLabel.targetLabel());
+    }
+
+    @Test
+    public void testIgnoreOnlyUnknownCurrentEdgeLabelFields()
+                     throws Exception {
+        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
+                                                        "edgeLabelType"));
+        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
+                                                        "parentLabel"));
+        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
+                                                        "links"));
+
+        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
+                                                         "edgeLabelType"));
+        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
+                                                         "parentLabel"));
+        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
+                                                         "links"));
+    }
+
+    private static boolean shouldIgnoreEdgeLabelProperty(Class<?> edgeLabelClass,
+                                                        String methodName)
+                                                        throws Exception {
+        Method method = HugeClientUtil.class.getDeclaredMethod(
+                        "shouldIgnoreEdgeLabelProperty", Class.class,
+                        String.class);
+        method.setAccessible(true);
+        return (boolean) method.invoke(null, edgeLabelClass, methodName);
+    }
+
+    public static class CurrentEdgeLabel {
+
+        public String edgeLabelType() {
+            return "NORMAL";
+        }
+
+        public String parentLabel() {
+            return null;
+        }
+
+        public Object links() {
+            return null;
+        }
     }
 }
