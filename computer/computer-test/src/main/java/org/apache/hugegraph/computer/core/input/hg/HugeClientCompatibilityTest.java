@@ -25,6 +25,10 @@ import org.apache.hugegraph.structure.schema.EdgeLabel;
 import org.apache.hugegraph.testutil.Assert;
 import org.junit.Test;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.module.SimpleModule;
+
 public class HugeClientCompatibilityTest {
 
     @Test
@@ -58,45 +62,23 @@ public class HugeClientCompatibilityTest {
     }
 
     @Test
-    public void testIgnoreOnlyUnknownCurrentEdgeLabelFields()
+    public void testEdgeLabelCompatibilityUsesIgnoreUnknownMixin()
                      throws Exception {
-        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
-                                                        "edgeLabelType"));
-        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
-                                                        "parentLabel"));
-        Assert.assertTrue(shouldIgnoreEdgeLabelProperty(EdgeLabel.class,
-                                                        "links"));
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(newCompatibilityModule());
 
-        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
-                                                         "edgeLabelType"));
-        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
-                                                         "parentLabel"));
-        Assert.assertFalse(shouldIgnoreEdgeLabelProperty(CurrentEdgeLabel.class,
-                                                         "links"));
+        Class<?> mixIn = mapper.getDeserializationConfig()
+                               .findMixInClassFor(EdgeLabel.class);
+        JsonIgnoreProperties annotation = mixIn.getAnnotation(
+                                          JsonIgnoreProperties.class);
+
+        Assert.assertTrue(annotation.ignoreUnknown());
     }
 
-    private static boolean shouldIgnoreEdgeLabelProperty(Class<?> edgeLabelClass,
-                                                        String methodName)
-                                                        throws Exception {
+    private static SimpleModule newCompatibilityModule() throws Exception {
         Method method = HugeClientUtil.class.getDeclaredMethod(
-                        "shouldIgnoreEdgeLabelProperty", Class.class,
-                        String.class);
+                        "newCompatibilityModule");
         method.setAccessible(true);
-        return (boolean) method.invoke(null, edgeLabelClass, methodName);
-    }
-
-    public static class CurrentEdgeLabel {
-
-        public String edgeLabelType() {
-            return "NORMAL";
-        }
-
-        public String parentLabel() {
-            return null;
-        }
-
-        public Object links() {
-            return null;
-        }
+        return (SimpleModule) method.invoke(null);
     }
 }

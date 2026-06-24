@@ -25,19 +25,13 @@ import org.apache.hugegraph.rest.RestResult;
 import org.apache.hugegraph.structure.schema.EdgeLabel;
 import org.apache.hugegraph.util.JsonUtil;
 
-import com.fasterxml.jackson.databind.BeanDescription;
-import com.fasterxml.jackson.databind.DeserializationConfig;
-import com.fasterxml.jackson.databind.deser.BeanDeserializerBuilder;
-import com.fasterxml.jackson.databind.deser.BeanDeserializerModifier;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 
 public final class HugeClientUtil {
 
     private static final AtomicBoolean COMPATIBILITY_REGISTERED =
                                       new AtomicBoolean(false);
-    private static final String EDGE_LABEL_TYPE = "edgelabel_type";
-    private static final String EDGE_LABEL_PARENT_LABEL = "parent_label";
-    private static final String EDGE_LABEL_LINKS = "links";
 
     public static HugeClient newHugeClient(String url, String graph,
                                            String username, String password) {
@@ -66,41 +60,12 @@ public final class HugeClientUtil {
     private static SimpleModule newCompatibilityModule() {
         SimpleModule module = new SimpleModule(
                               "hugegraph-computer-client-compatibility");
-        module.setDeserializerModifier(new BeanDeserializerModifier() {
-
-            @Override
-            public BeanDeserializerBuilder updateBuilder(
-                   DeserializationConfig config, BeanDescription beanDesc,
-                   BeanDeserializerBuilder builder) {
-                if (EdgeLabel.class.equals(beanDesc.getBeanClass())) {
-                    addEdgeLabelIgnorable(builder, EDGE_LABEL_TYPE,
-                                          "edgeLabelType");
-                    addEdgeLabelIgnorable(builder, EDGE_LABEL_PARENT_LABEL,
-                                          "parentLabel");
-                    addEdgeLabelIgnorable(builder, EDGE_LABEL_LINKS, "links");
-                }
-                return builder;
-            }
-        });
+        module.setMixInAnnotation(EdgeLabel.class, IgnoreUnknownFields.class);
         return module;
     }
 
-    private static void addEdgeLabelIgnorable(BeanDeserializerBuilder builder,
-                                              String jsonProperty,
-                                              String methodName) {
-        if (shouldIgnoreEdgeLabelProperty(EdgeLabel.class, methodName)) {
-            builder.addIgnorable(jsonProperty);
-        }
-    }
-
-    static boolean shouldIgnoreEdgeLabelProperty(Class<?> edgeLabelClass,
-                                                 String methodName) {
-        try {
-            edgeLabelClass.getMethod(methodName);
-            return false;
-        } catch (NoSuchMethodException ignored) {
-            return true;
-        }
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private abstract static class IgnoreUnknownFields {
     }
 
     private HugeClientUtil() {
