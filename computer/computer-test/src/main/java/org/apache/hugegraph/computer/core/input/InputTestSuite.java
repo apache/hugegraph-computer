@@ -17,6 +17,7 @@
 
 package org.apache.hugegraph.computer.core.input;
 
+import org.apache.hugegraph.computer.core.input.hg.HugeClientCompatibilityTest;
 import org.junit.runner.RunWith;
 import org.junit.runners.Suite;
 
@@ -25,7 +26,8 @@ import org.junit.runners.Suite;
     InputSplitTest.class,
     FileInputSplitTest.class,
     InputSplitDataTest.class,
-    HugeConverterTest.class
+    HugeConverterTest.class,
+    HugeClientCompatibilityTest.class
 })
 public class InputTestSuite {
 }

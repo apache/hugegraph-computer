@@ -50,11 +50,17 @@ public final class HugeClientUtil {
     }
 
     public static void registerCompatibilityModule() {
-        if (!COMPATIBILITY_REGISTERED.compareAndSet(false, true)) {
+        if (COMPATIBILITY_REGISTERED.get()) {
             return;
         }
-        RestResult.registerModule(newCompatibilityModule());
-        JsonUtil.registerModule(newCompatibilityModule());
+        synchronized (HugeClientUtil.class) {
+            if (COMPATIBILITY_REGISTERED.get()) {
+                return;
+            }
+            RestResult.registerModule(newCompatibilityModule());
+            JsonUtil.registerModule(newCompatibilityModule());
+            COMPATIBILITY_REGISTERED.set(true);
+        }
     }
 
     private static SimpleModule newCompatibilityModule() {
