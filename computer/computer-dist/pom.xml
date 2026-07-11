@@ -109,10 +109,10 @@
                         </goals>
                         <configuration>
                             <target>
-                                <copy file="${top.level.dir}/computer-algorithm/target/computer-algorithm-${revision}.jar"
+                                <copy file="${top.level.dir}/computer-algorithm/target/computer-algorithm-${project.version}.jar"
                                       tofile="${top.level.dir}/${final.name}/algorithm/builtin-algorithm.jar"
                                       overwrite="true"/>
-                                <copy file="${top.level.dir}/computer-k8s-operator/target/hugegraph-computer-operator-${revision}.jar"
+                                <copy file="${top.level.dir}/computer-k8s-operator/target/hugegraph-computer-operator-${project.version}.jar"
                                       tofile="${top.level.dir}/${final.name}/k8s-operator/hugegraph-computer-operator.jar"
                                       overwrite="true"/>
                                 <tar destfile="${top.level.dir}/target/${final.name}.tar.gz"

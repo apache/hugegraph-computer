@@ -36,7 +36,7 @@
     </dependencies>
 
     <build>
-        <finalName>hugegraph-computer-operator-${revision}</finalName>
+        <finalName>hugegraph-computer-operator-${project.version}</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
