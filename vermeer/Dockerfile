@@ -14,14 +14,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-FROM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 RUN apk add --no-cache npm bash curl
-COPY ./ /src/
 WORKDIR /src/
 ENV CGO_ENABLED="0"
+
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY scripts/download_ui_assets.sh ./scripts/
+COPY ui/package.json ./ui/
 RUN ./scripts/download_ui_assets.sh
-RUN cd asset && go generate
-RUN go build -o /go/bin/app
+
+COPY ./ ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    cd asset && go generate
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /go/bin/app
 
 FROM alpine
 EXPOSE 8080
