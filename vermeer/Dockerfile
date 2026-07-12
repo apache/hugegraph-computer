@@ -15,8 +15,6 @@
 # limitations under the License.
 #
 FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
-ARG TARGETOS
-ARG TARGETARCH
 RUN apk add --no-cache npm bash curl
 WORKDIR /src/
 ENV CGO_ENABLED="0"
@@ -32,6 +30,8 @@ COPY ./ ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     cd asset && go generate
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /go/bin/app
