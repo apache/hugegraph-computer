@@ -94,7 +94,9 @@ jobs:
             action="skip"
             reason="missing head repository metadata"
           else
-            latest_head_sha="$(gh api "repos/$HEAD_REPOSITORY/commits" -f sha="$HEAD_BRANCH" -F per_page=1 --jq '.[0].sha' 2>/dev/null || true)"
+            if ! latest_head_sha="$(gh api --method GET "repos/$HEAD_REPOSITORY/commits" -f sha="$HEAD_BRANCH" -F per_page=1 --jq '.[0].sha')"; then
+              latest_head_sha=""
+            fi
 
             if [[ -z "$latest_head_sha" || "$latest_head_sha" == "null" ]]; then
               action="skip"
