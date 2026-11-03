@@ -60,7 +60,7 @@ func (h *ServerHandler) SayHelloMaster(ctx context.Context, req *pb.HelloMasterR
 
 	// check worker version, if not match, deny
 	if req.Version != version.Version {
-		err := fmt.Errorf("registration denied: inconsistent registration version! master version %v, worker version %v", req.Version, version.Version)
+		err := fmt.Errorf("registration denied: inconsistent registration version! master version %v, worker version %v", version.Version, req.Version)
 		logrus.Errorf(err.Error())
 		return &pb.HelloMasterResp{Base: &pb.BaseResponse{ErrorCode: -1, Message: err.Error()}}, err
 	}
