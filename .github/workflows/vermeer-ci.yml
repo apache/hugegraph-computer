@@ -94,7 +94,7 @@ jobs:
           go test -race ./apps/auth ./cmd/vermeer-token
           go test -race ./apps/common
           go test -race ./apps/master/workers ./apps/master/services
-          go test -race ./apps/master/bl -run 'Test(WorkerAvailability|HugegraphLoadAuthorization)'
+          go test -race ./apps/master/bl -run 'Test(WorkerAvailability|HugegraphLoadAuthorization|RegistrationVersionMismatch)'
           go test -race ./apps/worker
           go test -race ./apps/structure -run 'Test(VertexStore|GraphPropagates|MemoryVertex|HugegraphSchema)'
 
