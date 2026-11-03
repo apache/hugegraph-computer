@@ -462,10 +462,16 @@ func (cb *ComputeBl) RunOutput(taskID int32) {
 		}
 	}()
 	computeTask := ComputeTaskMgr.GetTask(taskID)
-	computeTask.ComputeWorker.Context().Output = true
 	if !cb.CheckAction(computeTask) {
 		return
 	}
+	if validator, ok := computeTask.ComputeWorker.(interface{ ValidateOutput() error }); ok {
+		if err := validator.ValidateOutput(); err != nil {
+			cb.SetStatusError(taskID, err.Error())
+			return
+		}
+	}
+	computeTask.ComputeWorker.Context().Output = true
 	computeTask.Task.SetState(structure.TaskStateOutput)
 	graph := GraphMgr.GetGraphByName(computeTask.Task.SpaceName, computeTask.Task.GraphName)
 
