@@ -45,6 +45,17 @@ type registrationWindowWorker struct {
 	release chan struct{}
 }
 
+func TestRegistrationVersionMismatchReportsCorrectVersions(t *testing.T) {
+	workerVersion := "incompatible-worker-version"
+	resp, err := new(ServerHandler).SayHelloMaster(context.Background(), &pb.HelloMasterReq{
+		Version: workerVersion,
+	})
+	want := fmt.Sprintf("registration denied: inconsistent registration version! master version %s, worker version %s", version.Version, workerVersion)
+	if err == nil || err.Error() != want || resp.GetBase().GetMessage() != want {
+		t.Fatalf("unexpected response for version mismatch: response=%v error=%v", resp, err)
+	}
+}
+
 type dispatchTestStream struct {
 	grpc.ServerStream
 	requests []*pb.LoadGraphTaskResp

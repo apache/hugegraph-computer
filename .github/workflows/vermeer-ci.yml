@@ -20,13 +20,15 @@ on:
   push:
     branches:
       - master
-      - /^release-.*$/
+      - 'release-*'
     paths:
       - vermeer/**
+      - computer/pom.xml
       - .github/workflows/vermeer-ci.yml
   pull_request:
     paths:
       - vermeer/**
+      - computer/pom.xml
       - .github/workflows/vermeer-ci.yml
 
 defaults:
@@ -43,6 +45,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Check release versions
+        run: |
+          python3 - <<'PY'
+          import re
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse('../computer/pom.xml').getroot()
+          revision = root.findtext('{*}properties/{*}revision')
+          source = open('apps/version/version.go', encoding='utf-8').read()
+          match = re.search(r'^const Version = "([^"]+)"$', source, re.MULTILINE)
+          if not revision or not match or revision != match.group(1):
+              raise SystemExit(f'Computer revision {revision!r} and Vermeer version '
+                               f'{match.group(1) if match else None!r} must match')
+          PY
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -78,7 +95,7 @@ jobs:
           go test -race ./apps/common
           go test -race ./algorithms
           go test -race ./apps/master/workers ./apps/master/services
-          go test -race ./apps/master/bl -run 'Test(WorkerAvailability|HugegraphLoadAuthorization)'
+          go test -race ./apps/master/bl -run 'Test(WorkerAvailability|HugegraphLoadAuthorization|RegistrationVersionMismatch)'
           go test -race ./apps/worker
           go test -race ./apps/structure -run 'Test(VertexStore|GraphPropagates|MemoryVertex|HugegraphSchema)'
 

@@ -152,6 +152,10 @@ cd vermeer
 
 The `--env` parameter specifies the configuration file name in the `config/` folder (e.g., `master.ini`, `worker.ini`).
 
+Master and Worker must run the same Vermeer version: registration rejects a
+version mismatch. When upgrading, rebuild and update all Master and Worker
+images together, and expect Workers to be unavailable during the transition.
+
 #### Using the Shell Script
 
 Configure parameters in `vermeer.sh`, then:

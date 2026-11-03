@@ -45,7 +45,7 @@ cd asset && go generate && cd ..
 ARCH=$1
 CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go build
 
-VERSION=$(cat ./apps/version/version.go | grep 'Version' | awk -F '"' '{print $2}')
+VERSION=$(awk -F '"' '/^const Version[[:space:]]/ {print $2}' ./apps/version/version.go)
 cp tools/supervisord/linux_"$ARCH"/supervisord supervisord
 tar --exclude=config/afs_client.conf -zcvf vermeer-"$VERSION"-"$ARCH".tar.gz vermeer config/ supervisord vermeer.sh mem_supervisor.sh release-docs/LICENSE release-docs/NOTICE release-docs/licenses/
 

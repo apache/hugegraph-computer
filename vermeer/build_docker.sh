@@ -15,7 +15,7 @@
 # limitations under the License.
 #
 #!/usr/bin/env bash
-VERSION=$(cat ./apps/version/version.go | grep 'Version' | awk -F '"' '{print $2}')
+VERSION=$(awk -F '"' '/^const Version[[:space:]]/ {print $2}' ./apps/version/version.go)
 
 
 USERNAME=$1 # 用户邮箱前缀
