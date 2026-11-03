@@ -112,6 +112,14 @@ func (lw *LouvainWeightedWorker) VertexValue(i uint32) serialize.MarshalAble {
 	return &nilValue
 }
 
+// ValidateOutput rejects early termination before community IDs are available.
+func (lw *LouvainWeightedWorker) ValidateOutput() error {
+	if lw.firstStep {
+		return fmt.Errorf("louvain_weighted did not finish its first pass; increase compute.max_step")
+	}
+	return nil
+}
+
 func (lw *LouvainWeightedWorker) Init() error {
 	lw.communities = make(map[serialize.SUint32]*community, lw.WContext.GraphData.Vertex.TotalVertexCount())
 

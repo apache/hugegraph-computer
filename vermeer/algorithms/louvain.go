@@ -18,6 +18,7 @@ under the License.
 package algorithms
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,14 @@ func (lw *LouvainWorker) VertexValue(i uint32) serialize.MarshalAble {
 	}
 	nilValue := serialize.SInt32(0)
 	return &nilValue
+}
+
+// ValidateOutput rejects early termination before community IDs are available.
+func (lw *LouvainWorker) ValidateOutput() error {
+	if lw.firstStep {
+		return fmt.Errorf("louvain did not finish its first pass; increase compute.max_step")
+	}
+	return nil
 }
 
 func (lw *LouvainWorker) Init() error {
