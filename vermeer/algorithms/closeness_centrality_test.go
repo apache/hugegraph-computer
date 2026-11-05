@@ -23,9 +23,19 @@ import (
 	"sync/atomic"
 	"testing"
 	"vermeer/apps/compute"
+	"vermeer/apps/options"
 	"vermeer/apps/serialize"
 	"vermeer/apps/structure"
 )
+
+func initClosenessTestOptions(t *testing.T) {
+	t.Helper()
+	previous := options.AllOptionsMap
+	options.Init()
+	t.Cleanup(func() {
+		options.AllOptionsMap = previous
+	})
+}
 
 func TestClosenessDistanceMapUsesGlobalVertexID(t *testing.T) {
 	distances := newClosenessDistanceMap(101, 3)
@@ -81,6 +91,7 @@ func TestClosenessParameterValidation(t *testing.T) {
 }
 
 func TestClosenessInitValidatesBeforeAllocatingGraphState(t *testing.T) {
+	initClosenessTestOptions(t)
 	tests := []struct {
 		name   string
 		params map[string]string
@@ -121,6 +132,7 @@ func TestClosenessInitValidatesBeforeAllocatingGraphState(t *testing.T) {
 }
 
 func TestClosenessTraversalFinishesAtEccentricity(t *testing.T) {
+	initClosenessTestOptions(t)
 	const maxStep = 4
 	params := map[string]string{
 		"closeness_centrality.sample_rate": "1",
