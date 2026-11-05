@@ -92,6 +92,7 @@ type LouvainWeightedWorker struct {
 	firstStep       bool
 	firstStepKI     []float64
 	firstStepCommID []serialize.SUint32
+	outputReady     int32
 
 	// property weight
 	useProperty  bool
@@ -114,8 +115,8 @@ func (lw *LouvainWeightedWorker) VertexValue(i uint32) serialize.MarshalAble {
 
 // ValidateOutput rejects early termination before community IDs are available.
 func (lw *LouvainWeightedWorker) ValidateOutput() error {
-	if lw.firstStep {
-		return fmt.Errorf("louvain_weighted did not finish its first pass; increase compute.max_step")
+	if atomic.LoadInt32(&lw.outputReady) == 0 {
+		return fmt.Errorf("louvain_weighted did not finish publishing community IDs; increase compute.max_step")
 	}
 	return nil
 }
@@ -149,6 +150,7 @@ func (lw *LouvainWeightedWorker) Init() error {
 
 	lw.emptyComm = serialize.SUint32(lw.WContext.GraphData.Vertex.TotalVertexCount() + 1)
 	lw.firstStep = true
+	atomic.StoreInt32(&lw.outputReady, 0)
 
 	// load edge weight
 	lw.edgeProperty = options.GetString(lw.WContext.Params, "louvain.edge_weight_property")
@@ -276,11 +278,12 @@ func (lw *LouvainWeightedWorker) BeforeStep() {
 		}
 		update := lw.WContext.GetValue("update").(serialize.SInt32)
 		if update > 0 {
+			atomic.StoreInt32(&lw.outputReady, 0)
 			lw.deleteEmptyComm()
 			if lw.firstStep {
-				lw.firstStep = false
 				//初始化node
 				lw.initLouvainNode()
+				lw.firstStep = false
 				//free memory
 				lw.firstStepCommID = nil
 				lw.firstStepKI = nil
@@ -289,6 +292,7 @@ func (lw *LouvainWeightedWorker) BeforeStep() {
 				//生成新图
 				lw.genNewGraph()
 			}
+			atomic.StoreInt32(&lw.outputReady, 1)
 			lw.WContext.SetValue("mod_value", serialize.SFloat32(lw.calModularity()))
 		} else {
 			if rand.Float32() < 0.5 {
