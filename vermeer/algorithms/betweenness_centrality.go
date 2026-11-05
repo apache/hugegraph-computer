@@ -18,14 +18,27 @@ under the License.
 package algorithms
 
 import (
+	"encoding/binary"
 	"fmt"
-	"math/rand"
+	"math"
+	"sync"
 	"vermeer/apps/common"
 	"vermeer/apps/compute"
 	"vermeer/apps/options"
 	"vermeer/apps/serialize"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	betweennessStopValue     = "stop_sum"
+	betweennessCompleteValue = "betweenness_complete"
+
+	// A contribution chunk stays well below the 2 MiB scatter buffer. Several
+	// chunks can therefore be sent in one bounded RPC frame, while no result ever
+	// becomes a whole-graph compute value or a single multi-gigabyte message.
+	maxBetweennessChunkRecords = 65_536
+	betweennessRecordSize      = 8 // uint32 target + float32 worker partial
 )
 
 func init() {
@@ -52,176 +65,536 @@ func (bc *BetweennessCentralityMaker) DataNeeded() []string {
 	return []string{}
 }
 
-type BetweennessCentralityWorker struct {
-	compute.WorkerComputerBase
-	useEndPoint         bool
-	stopFlag            bool
-	scale               serialize.SFloat32
-	sampleRate          float64
-	stopSum             []serialize.SInt32
-	betweennessValues   []serialize.SFloat32
-	tempEdges           [][]serialize.SUint32
-	neighborEdges       []serialize.SliceUint32
-	betweennessValueMap []serialize.MapUint32Float32
-	bfsNewValues        []map[uint32][][]uint32
-	bfsOldValues        []map[uint32][][]uint32
+func validateBetweennessSampleRate(value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value > 1 {
+		return fmt.Errorf("betweenness_centrality.sample_rate must be finite and in (0, 1], got %v",
+			value)
+	}
+	return nil
 }
 
-func (bcw *BetweennessCentralityWorker) VertexValue(i uint32) serialize.MarshalAble {
+func validateBetweennessMaxStep(maxStep int) error {
+	if maxStep < 2 {
+		return fmt.Errorf("betweenness_centrality requires compute.max_step >= 2, got %d",
+			maxStep)
+	}
+	return nil
+}
+
+func parseBetweennessEndpoint(value int) (bool, error) {
+	switch value {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		return false, fmt.Errorf("betweenness_centrality.use_endpoint must be 0 or 1, got %d",
+			value)
+	}
+}
+
+func betweennessScale(totalVertices uint32, useEndpoint bool, sampleRate float64) float64 {
+	if totalVertices <= 1 {
+		return 0
+	}
+	n := float64(totalVertices)
+	var scale float64
+	if useEndpoint {
+		scale = 1 / (n * (n - 1))
+	} else {
+		if totalVertices <= 2 {
+			return 0
+		}
+		scale = 1 / ((n - 1) * (n - 2))
+	}
+	return scale / sampleRate
+}
+
+func sampleBetweennessSource(vertexID uint32, sampleRate float64) bool {
+	if sampleRate >= 1 {
+		return true
+	}
+	value := uint64(vertexID) + 0x9e3779b97f4a7c15
+	value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9
+	value = (value ^ (value >> 27)) * 0x94d049bb133111eb
+	value ^= value >> 31
+	return float64(value>>11) < sampleRate*float64(uint64(1)<<53)
+}
+
+func selectBetweennessSources(start, count uint32, sampleRate float64) []uint32 {
+	if count == 0 {
+		return nil
+	}
+	capacity := int(math.Ceil(float64(count) * sampleRate))
+	if capacity < 1 {
+		capacity = 1
+	}
+	sources := make([]uint32, 0, capacity)
+	for localID := uint32(0); localID < count; localID++ {
+		vertexID := start + localID
+		if sampleBetweennessSource(vertexID, sampleRate) {
+			sources = append(sources, vertexID)
+		}
+	}
+	return sources
+}
+
+func logAddExp(left, right float64) float64 {
+	if math.IsInf(left, -1) {
+		return right
+	}
+	if math.IsInf(right, -1) {
+		return left
+	}
+	if left < right {
+		left, right = right, left
+	}
+	return left + math.Log1p(math.Exp(right-left))
+}
+
+func brandesContributions(source uint32, neighbors []serialize.SliceUint32,
+	useEndpoint bool, scale float64) map[uint32]float64 {
+	result := make(map[uint32]float64)
+	if scale == 0 || int(source) >= len(neighbors) {
+		return result
+	}
+
+	predecessors := make(map[uint32][]uint32)
+	logSigma := map[uint32]float64{source: 0}
+	distance := map[uint32]int{source: 0}
+	queue := []uint32{source}
+
+	for head := 0; head < len(queue); head++ {
+		vertex := queue[head]
+		nextDistance := distance[vertex] + 1
+		for _, rawNeighbor := range neighbors[vertex] {
+			neighbor := uint32(rawNeighbor)
+			if int(neighbor) >= len(neighbors) {
+				continue
+			}
+			neighborDistance, seen := distance[neighbor]
+			if !seen {
+				neighborDistance = nextDistance
+				distance[neighbor] = neighborDistance
+				queue = append(queue, neighbor)
+			}
+			if neighborDistance != nextDistance {
+				continue
+			}
+			currentLogSigma, ok := logSigma[neighbor]
+			if !ok {
+				currentLogSigma = math.Inf(-1)
+			}
+			logSigma[neighbor] = logAddExp(currentLogSigma, logSigma[vertex])
+			predecessors[neighbor] = append(predecessors[neighbor], vertex)
+		}
+	}
+
+	dependency := make(map[uint32]float64, len(queue))
+	if useEndpoint && len(queue) > 1 {
+		result[source] = float64(len(queue)-1) * scale
+	}
+	for index := len(queue) - 1; index >= 0; index-- {
+		vertex := queue[index]
+		for _, predecessor := range predecessors[vertex] {
+			pathRatio := math.Exp(logSigma[predecessor] - logSigma[vertex])
+			dependency[predecessor] += pathRatio * (1 + dependency[vertex])
+		}
+		if vertex == source {
+			continue
+		}
+		contribution := dependency[vertex]
+		if useEndpoint {
+			contribution++
+		}
+		contribution *= scale
+		if contribution != 0 {
+			result[vertex] = contribution
+		}
+	}
+	return result
+}
+
+// betweennessContributionChunk is already encoded so its retained memory is
+// exactly the wire representation: a uint32 count followed by count pairs of
+// (uint32 target, float32 worker partial). It never contains a whole-graph
+// vector and each chunk has a fixed upper bound.
+type betweennessContributionChunk struct {
+	payload []byte
+}
+
+func (chunk *betweennessContributionChunk) Marshal(buffer []byte) (int, error) {
+	if len(buffer) < len(chunk.payload) {
+		return 0, fmt.Errorf("betweenness contribution buffer has %d bytes, need %d",
+			len(buffer), len(chunk.payload))
+	}
+	return copy(buffer, chunk.payload), nil
+}
+
+func (chunk *betweennessContributionChunk) Unmarshal(buffer []byte) (int, error) {
+	size, err := betweennessChunkSize(buffer)
+	if err != nil {
+		return 0, err
+	}
+	chunk.payload = append(chunk.payload[:0], buffer[:size]...)
+	return size, nil
+}
+
+func (chunk *betweennessContributionChunk) ToString() string {
+	if len(chunk.payload) < 4 {
+		return "0"
+	}
+	return fmt.Sprintf("%d", binary.LittleEndian.Uint32(chunk.payload[:4]))
+}
+
+func (chunk *betweennessContributionChunk) PredictSize() int {
+	return len(chunk.payload)
+}
+
+func betweennessChunkSize(buffer []byte) (int, error) {
+	if len(buffer) < 4 {
+		return 0, fmt.Errorf("betweenness contribution chunk is missing its count")
+	}
+	count := uint64(binary.LittleEndian.Uint32(buffer[:4]))
+	size := uint64(4) + count*betweennessRecordSize
+	if size > uint64(len(buffer)) {
+		return 0, fmt.Errorf("truncated betweenness contribution chunk: need %d bytes, got %d",
+			size, len(buffer))
+	}
+	return int(size), nil
+}
+
+func appendBetweennessRecord(payload []byte, target uint32, value float32) []byte {
+	offset := len(payload)
+	payload = append(payload, make([]byte, betweennessRecordSize)...)
+	binary.LittleEndian.PutUint32(payload[offset:offset+4], target)
+	binary.LittleEndian.PutUint32(payload[offset+4:offset+8], math.Float32bits(value))
+	return payload
+}
+
+func splitBetweennessContributions(partial []float64, localStart,
+	localCount uint32) ([]float64, []betweennessContributionChunk, error) {
+	local := make([]float64, localCount)
+	localEnd := uint64(localStart) + uint64(localCount)
+	chunks := make([]betweennessContributionChunk, 0)
+	var payload []byte
+	records := 0
+
+	flush := func() {
+		if records == 0 {
+			return
+		}
+		binary.LittleEndian.PutUint32(payload[:4], uint32(records))
+		chunks = append(chunks, betweennessContributionChunk{payload: payload})
+		payload = nil
+		records = 0
+	}
+
+	for target, value := range partial {
+		if value == 0 {
+			continue
+		}
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return nil, nil, fmt.Errorf("betweenness partial for vertex %d is not finite", target)
+		}
+		rounded := float32(value)
+		if math.IsInf(float64(rounded), 0) {
+			return nil, nil, fmt.Errorf("betweenness partial for vertex %d exceeds float32", target)
+		}
+		if rounded == 0 {
+			continue
+		}
+
+		targetID := uint32(target)
+		if uint64(targetID) >= uint64(localStart) && uint64(targetID) < localEnd {
+			local[targetID-localStart] += float64(rounded)
+			continue
+		}
+		if records == 0 {
+			payload = make([]byte, 4, 4+maxBetweennessChunkRecords*betweennessRecordSize)
+		}
+		payload = appendBetweennessRecord(payload, targetID, rounded)
+		records++
+		if records == maxBetweennessChunkRecords {
+			flush()
+		}
+	}
+	flush()
+	return local, chunks, nil
+}
+
+type betweennessContributionReceiver struct {
+	worker *BetweennessCentralityWorker
+}
+
+func (*betweennessContributionReceiver) Marshal([]byte) (int, error) {
+	// Inactive local vertex slots intentionally contribute no bytes. Active
+	// slots return a betweennessContributionChunk from VertexValue instead.
+	return 0, nil
+}
+
+func (receiver *betweennessContributionReceiver) Unmarshal(buffer []byte) (int, error) {
+	if receiver.worker == nil {
+		return 0, fmt.Errorf("betweenness contribution receiver is not initialized")
+	}
+	size, err := betweennessChunkSize(buffer)
+	if err != nil {
+		return 0, err
+	}
+	count := int(binary.LittleEndian.Uint32(buffer[:4]))
+	worker := receiver.worker
+	localEnd := uint64(worker.localStart) + uint64(worker.localCount)
+
+	worker.valuesMu.Lock()
+	defer worker.valuesMu.Unlock()
+	for index := 0; index < count; index++ {
+		offset := 4 + index*betweennessRecordSize
+		target := binary.LittleEndian.Uint32(buffer[offset : offset+4])
+		value := math.Float32frombits(binary.LittleEndian.Uint32(
+			buffer[offset+4 : offset+8]))
+		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
+			return 0, fmt.Errorf("received non-finite betweenness value for vertex %d", target)
+		}
+		if uint64(target) < uint64(worker.localStart) || uint64(target) >= localEnd {
+			continue
+		}
+		worker.localValues[target-worker.localStart] += float64(value)
+	}
+	return size, nil
+}
+
+func (*betweennessContributionReceiver) ToString() string {
+	return ""
+}
+
+func (*betweennessContributionReceiver) PredictSize() int {
+	return 0
+}
+
+type BetweennessCentralityWorker struct {
+	compute.WorkerComputerBase
+	useEndPoint       bool
+	scale             float64
+	sampleRate        float64
+	totalVertices     uint32
+	localStart        uint32
+	localCount        uint32
+	sampledSources    []uint32
+	allSources        bool
+	selectedSources   int
+	neighborEdges     []serialize.SliceUint32
+	localValues       []float64
+	betweennessValues serialize.SliceFloat32
+	outgoingChunks    []betweennessContributionChunk
+	outgoingOffset    int
+	computed          bool
+	valuesMu          sync.Mutex
+	receiver          betweennessContributionReceiver
+}
+
+func (bcw *BetweennessCentralityWorker) VertexValue(vertexID uint32) serialize.MarshalAble {
+	if bcw.WContext.Output {
+		if vertexID < bcw.localStart || vertexID >= bcw.localStart+bcw.localCount {
+			return &bcw.receiver
+		}
+		return &bcw.betweennessValues[vertexID-bcw.localStart]
+	}
 	if bcw.WContext.Step == 1 {
-		return &bcw.neighborEdges[i]
+		return &bcw.neighborEdges[vertexID]
 	}
-	if bcw.stopFlag && bcw.WContext.Step > 1 {
-		return &bcw.betweennessValues[i]
+
+	// The standard scatter loop provides one slot per local vertex. Fill the
+	// current window with bounded contribution chunks and leave every remaining
+	// slot at zero bytes. Receivers do not rely on the slot's vertex ID because
+	// each record carries its actual target ID.
+	if vertexID >= bcw.localStart && vertexID < bcw.localStart+bcw.localCount {
+		localID := int(vertexID - bcw.localStart)
+		window := bcw.outgoingWindowCount()
+		if localID < window {
+			return &bcw.outgoingChunks[bcw.outgoingOffset+localID]
+		}
 	}
-	return &bcw.betweennessValueMap[i]
+	return &bcw.receiver
+}
+
+func (bcw *BetweennessCentralityWorker) ValidateOutput() error {
+	cValue, ok := bcw.WContext.CValues[betweennessCompleteValue]
+	if !ok || cValue.Value == nil {
+		return fmt.Errorf("betweenness_centrality output is missing completion state")
+	}
+	complete, ok := cValue.Value.(serialize.SInt32)
+	if !ok || complete != 1 {
+		return fmt.Errorf("betweenness_centrality did not finish contribution scattering; increase compute.max_step")
+	}
+	if uint32(len(bcw.localValues)) != bcw.localCount {
+		return fmt.Errorf("betweenness_centrality local result has %d values, expected %d",
+			len(bcw.localValues), bcw.localCount)
+	}
+	bcw.betweennessValues = make(serialize.SliceFloat32, bcw.localCount)
+	for localID, value := range bcw.localValues {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("betweenness result for local vertex %d is not finite", localID)
+		}
+		bcw.betweennessValues[localID] = serialize.SFloat32(value)
+	}
+	return nil
 }
 
 func (bcw *BetweennessCentralityWorker) Init() error {
-	bcw.betweennessValues = make([]serialize.SFloat32, bcw.WContext.GraphData.Vertex.TotalVertexCount())
-	bcw.neighborEdges = make([]serialize.SliceUint32, bcw.WContext.GraphData.Vertex.TotalVertexCount())
-	bcw.betweennessValueMap = make([]serialize.MapUint32Float32, bcw.WContext.GraphData.Vertex.TotalVertexCount())
-	for i := range bcw.betweennessValueMap {
-		bcw.betweennessValueMap[i] = make(map[serialize.SUint32]serialize.SFloat32)
+	bcw.sampleRate = options.GetFloat(bcw.WContext.Params,
+		"betweenness_centrality.sample_rate")
+	if err := validateBetweennessSampleRate(bcw.sampleRate); err != nil {
+		return err
 	}
-	bcw.tempEdges = make([][]serialize.SUint32, bcw.WContext.Parallel)
-	for i := range bcw.tempEdges {
-		bcw.tempEdges[i] = make([]serialize.SUint32, 0, 100)
+	useEndpoint, err := parseBetweennessEndpoint(options.GetInt(bcw.WContext.Params,
+		"betweenness_centrality.use_endpoint"))
+	if err != nil {
+		return err
 	}
-	bcw.bfsNewValues = make([]map[uint32][][]uint32, bcw.WContext.GraphData.VertexCount)
-	bcw.bfsOldValues = make([]map[uint32][][]uint32, bcw.WContext.GraphData.VertexCount)
-	bcw.stopSum = make([]serialize.SInt32, bcw.WContext.Parallel)
-	bcw.sampleRate = options.GetFloat(bcw.WContext.Params, "betweenness_centrality.sample_rate")
-	if bcw.sampleRate > 1.0 || bcw.sampleRate <= 0 {
-		logrus.Errorf("The param betweenness_centrality.sample_rate must be in (0.0, 1.0], actual got '%v",
-			bcw.sampleRate)
-		return fmt.Errorf("the param betweenness_centrality.sample_rate must be in (0.0, 1.0], actual got '%v",
-			bcw.sampleRate)
+	if err := validateBetweennessMaxStep(options.GetInt(bcw.WContext.Params,
+		"compute.max_step")); err != nil {
+		return err
 	}
-	bcw.useEndPoint = false
-	if options.GetInt(bcw.WContext.Params, "betweenness_centrality.use_endpoint") == 1 {
-		bcw.useEndPoint = true
-	}
-	bcw.stopFlag = false
 
-	n := serialize.SFloat32(bcw.WContext.GraphData.Vertex.TotalVertexCount())
-	if n < 2 {
-		bcw.scale = 1
-	} else if bcw.useEndPoint {
-		n *= serialize.SFloat32(bcw.sampleRate)
-		bcw.scale = 1 / serialize.SFloat32(n*(n-1))
+	bcw.useEndPoint = useEndpoint
+	bcw.totalVertices = bcw.WContext.GraphData.Vertex.TotalVertexCount()
+	bcw.localStart = bcw.WContext.GraphData.VertIDStart
+	bcw.localCount = bcw.WContext.GraphData.VertexCount
+	bcw.scale = betweennessScale(bcw.totalVertices, bcw.useEndPoint, bcw.sampleRate)
+	if bcw.sampleRate >= 1 {
+		bcw.allSources = true
+		bcw.selectedSources = int(bcw.localCount)
 	} else {
-		n *= serialize.SFloat32(bcw.sampleRate)
-		bcw.scale = 1 / serialize.SFloat32((n-1)*(n-2))
+		bcw.sampledSources = selectBetweennessSources(bcw.localStart, bcw.localCount,
+			bcw.sampleRate)
+		bcw.selectedSources = len(bcw.sampledSources)
 	}
+	bcw.neighborEdges = make([]serialize.SliceUint32, bcw.totalVertices)
+	bcw.localValues = make([]float64, bcw.localCount)
+	bcw.betweennessValues = make(serialize.SliceFloat32, bcw.localCount)
+	bcw.receiver.worker = bcw
 
-	bcw.WContext.CreateValue("stop_sum", compute.ValueTypeInt32, compute.CValueActionAggregate)
-	bcw.WContext.SetValue("stop_sum", serialize.SInt32(0))
-	bcw.WContext.CreateValue("stop_flag", compute.ValueTypeInt32, compute.CValueActionAggregate)
-	bcw.WContext.SetValue("stop_flag", serialize.SInt32(0))
+	bcw.WContext.CreateValue(betweennessStopValue, compute.ValueTypeInt32,
+		compute.CValueActionAggregate)
+	bcw.WContext.SetValue(betweennessStopValue, serialize.SInt32(1))
+	bcw.WContext.CreateValue(betweennessCompleteValue, compute.ValueTypeInt32,
+		compute.CValueActionNormal)
+	bcw.WContext.SetValue(betweennessCompleteValue, serialize.SInt32(0))
 	return nil
 }
 
 func (bcw *BetweennessCentralityWorker) BeforeStep() {
-	for i := range bcw.stopSum {
-		bcw.stopSum[i] = 0
-	}
-	if bcw.WContext.Step > 1 && bcw.WContext.GetValue("stop_flag").(serialize.SInt32) == 1 ||
-		options.GetInt(bcw.WContext.Params, "compute.max_step") == int(bcw.WContext.Step) {
-		bcw.stopFlag = true
-	}
-	for i := range bcw.bfsNewValues {
-		bcw.bfsOldValues[i] = make(map[uint32][][]uint32)
-		for k, v := range bcw.bfsNewValues[i] {
-			bcw.bfsOldValues[i][k] = v
-		}
-		bcw.bfsNewValues[i] = make(map[uint32][][]uint32)
-	}
-
-	if bcw.stopFlag {
-		rangeStart := bcw.WContext.GraphData.VertIDStart
-		rangeEnd := bcw.WContext.GraphData.VertIDStart + bcw.WContext.GraphData.VertexCount
-		for _, valueMap := range bcw.betweennessValueMap {
-			for k, v := range valueMap {
-				key := uint32(k)
-				if key >= rangeStart && key < rangeEnd {
-					bcw.betweennessValues[key] += v
-				}
-			}
-		}
-	}
-
-}
-
-func (bcw *BetweennessCentralityWorker) Compute(vertexID uint32, pID int) {
-	if bcw.stopFlag {
+	if bcw.WContext.Step != 2 || bcw.computed {
 		return
 	}
-	vertID := vertexID - bcw.WContext.GraphData.VertIDStart
-	switch bcw.WContext.Step {
-	case 1:
-		inEdges := bcw.WContext.GraphData.Edges.GetInEdges(vertID)
-		bcw.neighborEdges[vertexID] = make([]serialize.SUint32, 0, len(inEdges))
-		for _, edge := range inEdges {
-			if !bcw.sample() || uint32(edge) == vertexID {
-				continue
-			}
-			bcw.neighborEdges[vertexID] = append(bcw.neighborEdges[vertexID], edge)
-			bcw.bfsNewValues[vertID][uint32(edge)] = [][]uint32{}
-			bcw.betweennessValueMap[vertexID][edge] = 0
-			if bcw.useEndPoint {
-				bcw.betweennessValueMap[vertexID][edge] += 1 * bcw.scale
-			}
-		}
-		bcw.stopSum[pID] = 1
-	default:
-		for k, v := range bcw.bfsOldValues[vertID] {
-			for _, nId := range bcw.neighborEdges[k] {
-				if !bcw.sample() || nId == serialize.SUint32(vertexID) {
-					continue
-				}
-				if _, ok := bcw.betweennessValueMap[vertexID][nId]; !ok {
-					bcw.stopSum[pID] = 1
-					bcw.tempEdges[pID] = append(bcw.tempEdges[pID], nId)
-					for _, vi := range v {
-						newV := append(vi, k)
-						bcw.bfsNewValues[vertID][uint32(nId)] = append(bcw.bfsNewValues[vertID][uint32(nId)], newV)
-					}
-					if len(v) == 0 {
-						bcw.bfsNewValues[vertID][uint32(nId)] = append(bcw.bfsNewValues[vertID][uint32(nId)], []uint32{k})
-					}
-				}
-			}
-		}
-		for _, edge := range bcw.tempEdges[pID] {
-			bcw.betweennessValueMap[vertexID][edge] = 0
-			if bcw.useEndPoint {
-				bcw.betweennessValueMap[vertexID][edge] += 1 * bcw.scale
-			}
-		}
+	partial := bcw.computeSampledSourcePartials()
+	local, chunks, err := splitBetweennessContributions(partial,
+		bcw.localStart, bcw.localCount)
+	if err != nil {
+		panic(err)
 	}
-	bcw.tempEdges[pID] = bcw.tempEdges[pID][0:0]
-	for _, values := range bcw.bfsNewValues[vertID] {
-		for _, v := range values {
-			for _, u := range v {
-				bcw.betweennessValueMap[vertexID][serialize.SUint32(u)] +=
-					1.0 / serialize.SFloat32(len(values)) * bcw.scale
-			}
-		}
-	}
+	bcw.localValues = local
+	bcw.outgoingChunks = chunks
+	bcw.outgoingOffset = 0
+	bcw.computed = true
+	logrus.Infof("betweenness selected sources: %d, contribution chunks: %d",
+		bcw.selectedSources, len(bcw.outgoingChunks))
+}
 
+func (bcw *BetweennessCentralityWorker) Compute(vertexID uint32, _ int) {
+	if bcw.WContext.Step != 1 {
+		return
+	}
+	localID := vertexID - bcw.localStart
+	inEdges := bcw.WContext.GraphData.Edges.GetInEdges(localID)
+	neighbors := make(serialize.SliceUint32, 0, len(inEdges))
+	seen := make(map[serialize.SUint32]struct{}, len(inEdges))
+	for _, neighbor := range inEdges {
+		if uint32(neighbor) == vertexID || uint32(neighbor) >= bcw.totalVertices {
+			continue
+		}
+		if _, exists := seen[neighbor]; exists {
+			continue
+		}
+		seen[neighbor] = struct{}{}
+		neighbors = append(neighbors, neighbor)
+	}
+	bcw.neighborEdges[vertexID] = neighbors
 }
 
 func (bcw *BetweennessCentralityWorker) AfterStep() {
-	var stopSum serialize.SInt32
-	for i := range bcw.stopSum {
-		stopSum += bcw.stopSum[i]
+	if bcw.WContext.Step == 1 {
+		if bcw.selectedSources == 0 || bcw.scale == 0 {
+			bcw.WContext.SetValue(betweennessStopValue, serialize.SInt32(0))
+		} else {
+			bcw.WContext.SetValue(betweennessStopValue, serialize.SInt32(1))
+		}
+		return
 	}
-	bcw.WContext.SetValue("stop_sum", stopSum)
+
+	bcw.outgoingOffset += bcw.outgoingWindowCount()
+	if bcw.outgoingOffset < len(bcw.outgoingChunks) {
+		bcw.WContext.SetValue(betweennessStopValue, serialize.SInt32(1))
+		return
+	}
+	bcw.outgoingChunks = nil
+	bcw.WContext.SetValue(betweennessStopValue, serialize.SInt32(0))
 }
 
-func (bcw *BetweennessCentralityWorker) sample() bool {
-	return rand.Float64() < bcw.sampleRate
+func (bcw *BetweennessCentralityWorker) outgoingWindowCount() int {
+	remaining := len(bcw.outgoingChunks) - bcw.outgoingOffset
+	if remaining <= 0 || bcw.localCount == 0 {
+		return 0
+	}
+	if remaining < int(bcw.localCount) {
+		return remaining
+	}
+	return int(bcw.localCount)
+}
+
+func (bcw *BetweennessCentralityWorker) computeSampledSourcePartials() []float64 {
+	partial := make([]float64, bcw.totalVertices)
+	if bcw.selectedSources == 0 || bcw.scale == 0 {
+		return partial
+	}
+	parallel := bcw.WContext.Parallel
+	if parallel <= 0 {
+		parallel = 1
+	}
+	if parallel > bcw.selectedSources {
+		parallel = bcw.selectedSources
+	}
+
+	results := make(chan map[uint32]float64, parallel)
+	var workers sync.WaitGroup
+	workers.Add(parallel)
+	for workerID := 0; workerID < parallel; workerID++ {
+		go func(offset int) {
+			defer workers.Done()
+			for sourceIndex := offset; sourceIndex < bcw.selectedSources; sourceIndex += parallel {
+				results <- brandesContributions(bcw.selectedSource(sourceIndex),
+					bcw.neighborEdges, bcw.useEndPoint, bcw.scale)
+			}
+		}(workerID)
+	}
+	go func() {
+		workers.Wait()
+		close(results)
+	}()
+
+	for contributions := range results {
+		for target, value := range contributions {
+			partial[target] += value
+		}
+	}
+	return partial
+}
+
+func (bcw *BetweennessCentralityWorker) selectedSource(index int) uint32 {
+	if bcw.allSources {
+		return bcw.localStart + uint32(index)
+	}
+	return bcw.sampledSources[index]
 }
 
 func (bcw *BetweennessCentralityWorker) OutputValueType() string {
@@ -232,15 +605,22 @@ type BetweennessCentralityMaster struct {
 	compute.MasterComputerBase
 }
 
+func (bcm *BetweennessCentralityMaster) Init() error {
+	if err := validateBetweennessMaxStep(options.GetInt(bcm.MContext.Params,
+		"compute.max_step")); err != nil {
+		return err
+	}
+	bcm.MContext.CreateValue(betweennessCompleteValue, compute.ValueTypeInt32,
+		compute.CValueActionNormal)
+	bcm.MContext.SetValue(betweennessCompleteValue, serialize.SInt32(0))
+	return nil
+}
+
 func (bcm *BetweennessCentralityMaster) Compute() bool {
-	logrus.Infof("stopFlag:%v", bcm.MContext.GetValue("stop_flag").(serialize.SInt32))
-	if bcm.MContext.GetValue("stop_flag").(serialize.SInt32) == serialize.SInt32(len(bcm.MContext.WorkerCValues)) {
-		return false
+	stopSum := bcm.MContext.GetValue(betweennessStopValue).(serialize.SInt32)
+	if stopSum != 0 {
+		return true
 	}
-	stopSum := bcm.MContext.GetValue("stop_sum")
-	logrus.Infof("stopSum:%v", stopSum)
-	if stopSum.(serialize.SInt32) == serialize.SInt32(0) {
-		bcm.MContext.SetValue("stop_flag", serialize.SInt32(1))
-	}
-	return true
+	bcm.MContext.SetValue(betweennessCompleteValue, serialize.SInt32(1))
+	return false
 }
