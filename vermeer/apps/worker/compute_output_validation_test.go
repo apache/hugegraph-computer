@@ -27,6 +27,7 @@ import (
 	"vermeer/apps/compute"
 	"vermeer/apps/options"
 	pb "vermeer/apps/protos"
+	"vermeer/apps/serialize"
 	"vermeer/apps/structure"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,6 +42,16 @@ type invalidOutputWorker struct {
 func (w *invalidOutputWorker) ValidateOutput() error {
 	w.validated = true
 	return errors.New("increase compute.max_step")
+}
+
+type finalValueOutputWorker struct {
+	invalidOutputWorker
+	seen serialize.SInt32
+}
+
+func (w *finalValueOutputWorker) ValidateOutput() error {
+	w.seen = w.WContext.GetValue("is_continue").(serialize.SInt32)
+	return errors.New("stop after validation")
 }
 
 type outputStatusClient struct {
@@ -121,4 +132,45 @@ func TestRunOutputValidatesBeforeWriting(t *testing.T) {
 			t.Fatalf("paused cancellation must not report output error: state=%s request=%+v", task.State, status.req)
 		}
 	})
+}
+
+func TestRunOutputAppliesFinalAggregateValuesBeforeValidation(t *testing.T) {
+	previousOptions := options.AllOptionsMap
+	previousRunning := common.PrometheusMetrics.TaskRunningCnt
+	previousMaster := ServiceWorker.MasterClient
+	options.Init()
+	ComputeTaskMgr.Init()
+	common.PrometheusMetrics.TaskRunningCnt = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "test_output_final_values_running"}, []string{"type"})
+	t.Cleanup(func() {
+		ComputeTaskMgr.Init()
+		options.AllOptionsMap = previousOptions
+		common.PrometheusMetrics.TaskRunningCnt = previousRunning
+		ServiceWorker.MasterClient = previousMaster
+	})
+
+	status := new(outputStatusClient)
+	ServiceWorker.MasterClient = status
+	task := &structure.TaskInfo{ID: 9350, Type: structure.TaskTypeCompute,
+		Action: structure.ActionDoNoting, Params: map[string]string{"compute.algorithm": "sssp"}}
+	worker := new(finalValueOutputWorker)
+	ctx := worker.MakeContext(nil)
+	ctx.CreateValue("is_continue", compute.ValueTypeInt32, compute.CValueActionAggregate)
+	ctx.SetValue("is_continue", serialize.SInt32(0))
+	ct := ComputeTaskMgr.MakeTask(task)
+	ct.ComputeWorker = worker
+
+	finalValues := &compute.CContext{CValues: make(map[string]*compute.CValue)}
+	finalValues.CreateValue("is_continue", compute.ValueTypeInt32, compute.CValueActionAggregate)
+	finalValues.SetValue("is_continue", serialize.SInt32(1))
+	new(ComputeBl).RunOutputWithValues(task.ID, finalValues.MarshalValues())
+
+	if worker.seen != 1 {
+		t.Fatalf("validator saw stale aggregate value %d, want 1", worker.seen)
+	}
+	if task.State != structure.TaskStateError || status.req == nil ||
+		status.req.ErrorMsg != "stop after validation" {
+		t.Fatalf("expected validation failure after final-value refresh, state=%s request=%+v",
+			task.State, status.req)
+	}
 }

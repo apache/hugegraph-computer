@@ -403,7 +403,7 @@ func (rh *SuperStepHandler) HandleSuperStep() {
 		}
 		cb := ComputeBl{}
 		if resp.Output {
-			go cb.RunOutput(resp.TaskId)
+			go cb.RunOutputWithValues(resp.TaskId, resp.ComputeValues)
 		} else {
 			go cb.RunSuperStep(resp.TaskId, resp.ComputeValues)
 		}
