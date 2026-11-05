@@ -22,25 +22,27 @@ import (
 	"testing"
 )
 
-func TestLouvainRejectsOutputBeforeFirstPass(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		worker interface{ ValidateOutput() error }
+func TestLouvainRejectsOutputUntilCommunityIDsArePublished(t *testing.T) {
+	louvain := &LouvainWorker{firstStep: false}
+	weighted := &LouvainWeightedWorker{firstStep: false}
+	tests := []struct {
+		name     string
+		validate func() error
+		publish  func()
 	}{
-		{"louvain", &LouvainWorker{firstStep: true}},
-		{"louvain_weighted", &LouvainWeightedWorker{firstStep: true}},
-	} {
+		{"louvain", louvain.ValidateOutput, func() { louvain.outputReady = 1 }},
+		{"louvain_weighted", weighted.ValidateOutput, func() { weighted.outputReady = 1 }},
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := test.worker.ValidateOutput()
+			err := test.validate()
 			if err == nil || !strings.Contains(err.Error(), "increase compute.max_step") {
-				t.Fatalf("expected actionable early-output error, got %v", err)
+				t.Fatalf("expected actionable unpublished-output error, got %v", err)
+			}
+			test.publish()
+			if err := test.validate(); err != nil {
+				t.Fatalf("published output rejected: %v", err)
 			}
 		})
-	}
-	if err := (&LouvainWorker{firstStep: false}).ValidateOutput(); err != nil {
-		t.Fatalf("completed pass rejected: %v", err)
-	}
-	if err := (&LouvainWeightedWorker{firstStep: false}).ValidateOutput(); err != nil {
-		t.Fatalf("completed weighted pass rejected: %v", err)
 	}
 }
