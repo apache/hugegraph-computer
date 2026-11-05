@@ -59,12 +59,113 @@ const (
 	Boolean cyclesMode = "boolean"
 )
 
+const cycleCountValue = "cycle_num"
+
+type cycleSearchConfig struct {
+	minLength int
+	maxLength int
+	limit     int
+}
+
+func validateCycleSearchConfig(mode cyclesMode, minLength, maxLength, limit int) (cycleSearchConfig, error) {
+	if maxLength < 2 {
+		return cycleSearchConfig{}, fmt.Errorf("cycle.max_length must be at least 2, got %d", maxLength)
+	}
+	if minLength < 0 {
+		return cycleSearchConfig{}, fmt.Errorf("cycle.min_length must be non-negative, got %d", minLength)
+	}
+	if minLength == 0 {
+		minLength = 2
+	}
+	if minLength > maxLength {
+		return cycleSearchConfig{}, fmt.Errorf("cycle.min_length %d exceeds cycle.max_length %d",
+			minLength, maxLength)
+	}
+
+	switch mode {
+	case All:
+		return cycleSearchConfig{minLength: minLength, maxLength: maxLength}, nil
+	case Limit:
+		if limit <= 0 {
+			return cycleSearchConfig{}, fmt.Errorf("cycle.max_cycles must be positive in limit mode, got %d", limit)
+		}
+		return cycleSearchConfig{minLength: minLength, maxLength: maxLength, limit: limit}, nil
+	case Boolean:
+		return cycleSearchConfig{minLength: minLength, maxLength: maxLength, limit: 1}, nil
+	default:
+		return cycleSearchConfig{}, fmt.Errorf("cycle detection mode must be 'all', 'limit', or 'boolean', got %q", mode)
+	}
+}
+
+// searchBoundedCycles enumerates simple directed cycles that start and end at root.
+// path always includes root, so len(path) is the real cycle length when an edge
+// returns to root. A single visited set is mutated in place instead of rebuilding
+// one map at every recursive level.
+func searchBoundedCycles(root serialize.SUint32, adjacency []serialize.SliceUint32,
+	config cycleSearchConfig, allow func(serialize.SUint32) bool,
+	emit func([]serialize.SUint32)) int {
+	if int(root) >= len(adjacency) {
+		return 0
+	}
+
+	capacity := config.maxLength
+	if capacity > 64 {
+		capacity = 64
+	}
+	path := make([]serialize.SUint32, 1, capacity)
+	path[0] = root
+	visited := map[serialize.SUint32]struct{}{root: {}}
+	count := 0
+
+	var dfs func(serialize.SUint32)
+	dfs = func(vertex serialize.SUint32) {
+		if config.limit > 0 && count >= config.limit {
+			return
+		}
+		for _, next := range adjacency[vertex] {
+			if config.limit > 0 && count >= config.limit {
+				return
+			}
+			if int(next) >= len(adjacency) {
+				continue
+			}
+			if next == root {
+				cycleLength := len(path)
+				if cycleLength >= config.minLength && cycleLength <= config.maxLength {
+					// The root is implied by the output vertex, preserving the existing
+					// result shape while fixing length accounting.
+					cycle := append([]serialize.SUint32(nil), path[1:]...)
+					emit(cycle)
+					count++
+				}
+				continue
+			}
+			if len(path) >= config.maxLength {
+				continue
+			}
+			if allow != nil && !allow(next) {
+				continue
+			}
+			if _, exists := visited[next]; exists {
+				continue
+			}
+
+			visited[next] = struct{}{}
+			path = append(path, next)
+			dfs(next)
+			path = path[:len(path)-1]
+			delete(visited, next)
+		}
+	}
+
+	dfs(root)
+	return count
+}
+
 type CycleDetectionWorker struct {
 	compute.WorkerComputerBase
 	mode            cyclesMode
-	maxLen          int
-	minLen          int
-	limit           int
+	searchConfig    cycleSearchConfig
 	hasCycle        []serialize.SUint8
 	inEdges         []serialize.SliceUint32
 	cycleList       []serialize.TwoDimSliceString
@@ -75,23 +176,29 @@ type CycleDetectionWorker struct {
 }
 
 func (cdw *CycleDetectionWorker) Init() error {
-	cdw.inEdges = make([]serialize.SliceUint32, cdw.WContext.GraphData.Vertex.TotalVertexCount())
-	cdw.maxLen = options.GetInt(cdw.WContext.Params, "cycle.max_length")
-	cdw.minLen = options.GetInt(cdw.WContext.Params, "cycle.min_length")
-	cdw.mode = cyclesMode(options.GetString(cdw.WContext.Params, "cycle.mode"))
-	switch cdw.mode {
-	case All:
-		cdw.cycleList = make([]serialize.TwoDimSliceString, cdw.WContext.GraphData.VertexCount)
-	case Limit:
-		cdw.cycleList = make([]serialize.TwoDimSliceString, cdw.WContext.GraphData.VertexCount)
-		cdw.limit = options.GetInt(cdw.WContext.Params, "cycle.max_cycles")
-	case Boolean:
-		cdw.hasCycle = make([]serialize.SUint8, cdw.WContext.GraphData.VertexCount)
-	default:
-		return fmt.Errorf("cycle detection mode must be 'all', 'limit', 'boolean'. not: %v", cdw.mode)
+	mode := cyclesMode(options.GetString(cdw.WContext.Params, "cycle.mode"))
+	config, err := validateCycleSearchConfig(mode,
+		options.GetInt(cdw.WContext.Params, "cycle.min_length"),
+		options.GetInt(cdw.WContext.Params, "cycle.max_length"),
+		options.GetInt(cdw.WContext.Params, "cycle.max_cycles"))
+	if err != nil {
+		return err
 	}
-	cdw.WContext.CreateValue("cycle_num", compute.ValueTypeInt32, compute.CValueActionAggregate)
-	cdw.WContext.SetValue("cycle_num", serialize.SInt32(0))
+	cdw.mode = mode
+	cdw.searchConfig = config
+
+	totalVertices := cdw.WContext.GraphData.Vertex.TotalVertexCount()
+	localVertices := cdw.WContext.GraphData.VertexCount
+	cdw.inEdges = make([]serialize.SliceUint32, totalVertices)
+	switch cdw.mode {
+	case All, Limit:
+		cdw.cycleList = make([]serialize.TwoDimSliceString, localVertices)
+	case Boolean:
+		cdw.hasCycle = make([]serialize.SUint8, localVertices)
+	}
+	cdw.WContext.CreateValue(cycleCountValue, compute.ValueTypeInt64, compute.CValueActionAggregate)
+	cdw.WContext.SetValue(cycleCountValue, serialize.SInt64(0))
+
 	vertexExprStr := options.GetString(cdw.WContext.Params, "filter.vertex_expr")
 	filterVertexProps := options.GetSliceString(cdw.WContext.Params, "filter.vertex_properties")
 	edgeExprStr := options.GetString(cdw.WContext.Params, "filter.edge_expr")
@@ -99,162 +206,119 @@ func (cdw *CycleDetectionWorker) Init() error {
 	if vertexExprStr != "" && len(filterVertexProps) > 0 {
 		cdw.useVertexFilter = true
 		cdw.vertexFilter = &compute.VertexFilter{}
-		err := cdw.vertexFilter.Init(vertexExprStr, filterVertexProps, cdw.WContext.GraphData.VertexProperty)
-		if err != nil {
-			logrus.Errorf("vertex filter init error:%v", err)
-			return fmt.Errorf("vertex filter init error:%w", err)
+		if err := cdw.vertexFilter.Init(vertexExprStr, filterVertexProps,
+			cdw.WContext.GraphData.VertexProperty); err != nil {
+			return fmt.Errorf("vertex filter init error: %w", err)
 		}
 	}
 	if edgeExprStr != "" && len(filterEdgeProps) > 0 {
 		cdw.useEdgeFilter = true
 		cdw.edgeFilter = &compute.EdgeFilter{}
-		err := cdw.edgeFilter.Init(edgeExprStr, filterEdgeProps, cdw.WContext.GraphData.InEdgesProperty)
-		if err != nil {
-			logrus.Errorf("edge filter init error:%v", err)
-			return fmt.Errorf("edge filter init error:%w", err)
+		if err := cdw.edgeFilter.Init(edgeExprStr, filterEdgeProps,
+			cdw.WContext.GraphData.InEdgesProperty); err != nil {
+			return fmt.Errorf("edge filter init error: %w", err)
 		}
 	}
 	return nil
 }
 
-func (cdw *CycleDetectionWorker) VertexValue(i uint32) serialize.MarshalAble {
+func (cdw *CycleDetectionWorker) VertexValue(vertexID uint32) serialize.MarshalAble {
 	if cdw.WContext.Output {
+		localID := vertexID - cdw.WContext.GraphData.VertIDStart
 		switch cdw.mode {
 		case All, Limit:
-			return &cdw.cycleList[i-cdw.WContext.GraphData.VertIDStart]
+			return &cdw.cycleList[localID]
 		case Boolean:
-			return &cdw.hasCycle[i-cdw.WContext.GraphData.VertIDStart]
+			return &cdw.hasCycle[localID]
 		}
 	}
 	if cdw.WContext.Step == 1 {
-		return &cdw.inEdges[i]
+		return &cdw.inEdges[vertexID]
 	}
 	nilValue := serialize.SInt32(0)
 	return &nilValue
 }
 
-func (cdw *CycleDetectionWorker) BeforeStep() {
-}
-
 func (cdw *CycleDetectionWorker) Compute(vertexID uint32, pID int) {
+	_ = pID
 	if cdw.useVertexFilter && !cdw.vertexFilter.Filter(vertexID) {
 		return
 	}
-	_ = pID
-	vIDx := vertexID - cdw.WContext.GraphData.VertIDStart
+	localID := vertexID - cdw.WContext.GraphData.VertIDStart
 	if cdw.WContext.Step == 1 {
-		cdw.inEdges[vertexID] = make([]serialize.SUint32, 0, len(cdw.WContext.GraphData.Edges.GetInEdges(vIDx)))
-		tempMap := make(map[serialize.SUint32]struct{})
-		for idx, edge := range cdw.WContext.GraphData.Edges.GetInEdges(vIDx) {
-			if cdw.useVertexFilter && !cdw.vertexFilter.Filter(uint32(edge)) ||
-				cdw.useEdgeFilter && !cdw.edgeFilter.Filter(vIDx, uint32(idx)) {
-				continue
-			}
-			if _, ok := tempMap[edge]; ok || vertexID == uint32(edge) {
-				continue
-			}
-			tempMap[edge] = struct{}{}
-			cdw.inEdges[vertexID] = append(cdw.inEdges[vertexID], edge)
+		cdw.collectIncomingEdges(vertexID, localID)
+		return
+	}
+
+	switch cdw.mode {
+	case All, Limit:
+		rootExternalID := cdw.WContext.GraphData.Vertex.GetVertex(vertexID).ID
+		allow := func(next serialize.SUint32) bool {
+			return rootExternalID < cdw.WContext.GraphData.Vertex.GetVertex(uint32(next)).ID
 		}
-	} else {
-		switch cdw.mode {
-		case All, Limit:
-			for _, edge := range cdw.inEdges[vertexID] {
-				if cdw.WContext.GraphData.Vertex.GetVertex(vertexID).ID < cdw.WContext.GraphData.Vertex.GetVertex(uint32(edge)).ID {
-					cdw.dfs(serialize.SUint32(vertexID), edge, []serialize.SUint32{edge})
+		searchBoundedCycles(serialize.SUint32(vertexID), cdw.inEdges, cdw.searchConfig,
+			allow, func(cycle []serialize.SUint32) {
+				output := make([]serialize.SString, 0, len(cycle))
+				for _, node := range cycle {
+					output = append(output,
+						serialize.SString(cdw.WContext.GraphData.Vertex.GetVertex(uint32(node)).ID))
 				}
-			}
-		case Boolean:
-			for _, edge := range cdw.inEdges[vertexID] {
-				cdw.dfs(serialize.SUint32(vertexID), edge, []serialize.SUint32{edge})
-			}
-		}
+				cdw.cycleList[localID] = append(cdw.cycleList[localID], output)
+			})
+	case Boolean:
+		searchBoundedCycles(serialize.SUint32(vertexID), cdw.inEdges, cdw.searchConfig,
+			nil, func([]serialize.SUint32) {
+				cdw.hasCycle[localID] = 1
+			})
 	}
 }
 
-func (cdw *CycleDetectionWorker) dfs(rootID serialize.SUint32, vertexID serialize.SUint32, stack []serialize.SUint32) {
-	//logrus.Infof("root:%v, vID:%v, stack:%v", rootID, vertexID, stack)
-	if len(stack) > cdw.maxLen {
-		return
-	}
-	temp := make(map[serialize.SUint32]struct{}, len(stack))
-	for _, node := range stack {
-		if _, ok := temp[node]; ok {
-			return
-		}
-		temp[node] = struct{}{}
-	}
-
-	for _, edge := range cdw.inEdges[vertexID] {
-		if _, ok := temp[edge]; ok {
+func (cdw *CycleDetectionWorker) collectIncomingEdges(vertexID, localID uint32) {
+	edges := cdw.WContext.GraphData.Edges.GetInEdges(localID)
+	cdw.inEdges[vertexID] = make(serialize.SliceUint32, 0, len(edges))
+	seen := make(map[serialize.SUint32]struct{}, len(edges))
+	for edgeIndex, edge := range edges {
+		if uint32(edge) == vertexID {
 			continue
 		}
-		switch cdw.mode {
-		case All:
-			if cdw.WContext.GraphData.Vertex.GetVertex(uint32(rootID)).ID < cdw.WContext.GraphData.Vertex.GetVertex(uint32(edge)).ID {
-				cdw.dfs(rootID, edge, append(stack, edge))
-			} else if rootID == edge && len(stack) >= cdw.minLen {
-				vIDx := uint32(rootID) - cdw.WContext.GraphData.VertIDStart
-				newList := make([]serialize.SString, 0, len(stack))
-				for _, node := range stack {
-					newList = append(newList, serialize.SString(cdw.WContext.GraphData.Vertex.GetVertex(uint32(node)).ID))
-				}
-				cdw.cycleList[vIDx] = append(cdw.cycleList[vIDx], newList)
-			}
-		case Limit:
-			vIDx := uint32(rootID) - cdw.WContext.GraphData.VertIDStart
-			if len(cdw.cycleList[vIDx]) >= cdw.limit {
-				return
-			}
-			if cdw.WContext.GraphData.Vertex.GetVertex(uint32(rootID)).ID < cdw.WContext.GraphData.Vertex.GetVertex(uint32(edge)).ID {
-				cdw.dfs(rootID, edge, append(stack, edge))
-			} else if rootID == edge && len(stack) >= cdw.minLen {
-				vIDx := uint32(rootID) - cdw.WContext.GraphData.VertIDStart
-				newList := make([]serialize.SString, 0, len(stack))
-				for _, node := range stack {
-					newList = append(newList, serialize.SString(cdw.WContext.GraphData.Vertex.GetVertex(uint32(node)).ID))
-				}
-				cdw.cycleList[vIDx] = append(cdw.cycleList[vIDx], newList)
-				if len(cdw.cycleList[vIDx]) >= cdw.limit {
-					return
-				}
-			}
-		case Boolean:
-			if cdw.hasCycle[uint32(rootID)-cdw.WContext.GraphData.VertIDStart] == 1 {
-				return
-			}
-			if rootID != edge {
-				cdw.dfs(rootID, edge, append(stack, edge))
-			} else if len(stack) >= cdw.minLen {
-				cdw.hasCycle[uint32(rootID)-cdw.WContext.GraphData.VertIDStart] = 1
-				return
-			}
+		if cdw.useVertexFilter && !cdw.vertexFilter.Filter(uint32(edge)) {
+			continue
 		}
+		if cdw.useEdgeFilter && !cdw.edgeFilter.Filter(localID, uint32(edgeIndex)) {
+			continue
+		}
+		if _, exists := seen[edge]; exists {
+			continue
+		}
+		seen[edge] = struct{}{}
+		cdw.inEdges[vertexID] = append(cdw.inEdges[vertexID], edge)
 	}
 }
 
 func (cdw *CycleDetectionWorker) AfterStep() {
-	if cdw.WContext.Step > 1 {
-		cycleCount := 0
-		switch cdw.mode {
-		case All, Limit:
-			for _, list := range cdw.cycleList {
-				cycleCount += len(list)
-			}
-		case Boolean:
-			for _, has := range cdw.hasCycle {
-				if has == 1 {
-					cycleCount++
-				}
+	if cdw.WContext.Step <= 1 {
+		return
+	}
+	var cycleCount int64
+	switch cdw.mode {
+	case All, Limit:
+		for _, list := range cdw.cycleList {
+			cycleCount += int64(len(list))
+		}
+	case Boolean:
+		for _, has := range cdw.hasCycle {
+			if has == 1 {
+				cycleCount++
 			}
 		}
-
-		//logrus.Infof("cycle count:%v", cycleCount)
-		cdw.WContext.SetValue("cycle_num", serialize.SInt32(cycleCount))
 	}
+	cdw.WContext.SetValue(cycleCountValue, serialize.SInt64(cycleCount))
 }
 
 func (cdw *CycleDetectionWorker) OutputValueType() string {
+	if cdw.mode == Boolean {
+		return common.HgValueTypeInt
+	}
 	return common.HgValueTypeString
 }
 
@@ -268,8 +332,8 @@ func (cdm *CycleDetectionMaster) Init() error {
 
 func (cdm *CycleDetectionMaster) Compute() bool {
 	if cdm.MContext.Step == 2 {
-		cycleNum := cdm.MContext.GetValue("cycle_num").(serialize.SInt32)
-		logrus.Infof("cycles num:%v", cycleNum)
+		cycleNum := cdm.MContext.GetValue(cycleCountValue).(serialize.SInt64)
+		logrus.Infof("cycles num: %v", cycleNum)
 		return false
 	}
 	return true
