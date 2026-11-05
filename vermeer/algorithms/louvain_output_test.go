@@ -19,10 +19,13 @@ package algorithms
 
 import (
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
-func TestLouvainRejectsOutputUntilCommunityIDsArePublished(t *testing.T) {
+func TestLouvainDefensivelyRejectsUnpublishedCommunityIDs(t *testing.T) {
+	// The normal master/worker barrier completes BeforeStep before output starts.
+	// This test covers the defensive guard against malformed or early output state.
 	louvain := &LouvainWorker{firstStep: false}
 	weighted := &LouvainWeightedWorker{firstStep: false}
 	tests := []struct {
@@ -30,8 +33,8 @@ func TestLouvainRejectsOutputUntilCommunityIDsArePublished(t *testing.T) {
 		validate func() error
 		publish  func()
 	}{
-		{"louvain", louvain.ValidateOutput, func() { louvain.outputReady = 1 }},
-		{"louvain_weighted", weighted.ValidateOutput, func() { weighted.outputReady = 1 }},
+		{"louvain", louvain.ValidateOutput, func() { atomic.StoreInt32(&louvain.outputReady, 1) }},
+		{"louvain_weighted", weighted.ValidateOutput, func() { atomic.StoreInt32(&weighted.outputReady, 1) }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
