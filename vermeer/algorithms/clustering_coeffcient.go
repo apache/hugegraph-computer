@@ -20,6 +20,7 @@ package algorithms
 import (
 	"vermeer/apps/common"
 	"vermeer/apps/compute"
+	"vermeer/apps/options"
 	"vermeer/apps/serialize"
 )
 
@@ -49,86 +50,67 @@ func (cc *ClusteringCoefficientMaker) DataNeeded() []string {
 
 type ClusteringCoefficientWorker struct {
 	compute.WorkerComputerBase
-	ccValues         []serialize.SFloat32
-	totalNeighborSet []serialize.MapUint32Struct
-	selfNeighborSet  []map[serialize.SUint32]struct{}
+	ccValues          []serialize.SFloat32
+	degrees           []serialize.SUint32
+	orientedNeighbors []serialize.SliceUint32
+	localNeighbors    []serialize.SliceUint32
 }
 
-func (ccw *ClusteringCoefficientWorker) VertexValue(i uint32) serialize.MarshalAble {
-	if ccw.WContext.Step == 1 {
-		return &ccw.totalNeighborSet[i]
+func (ccw *ClusteringCoefficientWorker) VertexValue(vertexID uint32) serialize.MarshalAble {
+	if ccw.WContext.Output {
+		return &ccw.ccValues[vertexID]
 	}
-	return &ccw.ccValues[i]
+	switch ccw.WContext.Step {
+	case 1:
+		return &ccw.degrees[vertexID]
+	case 2:
+		return &ccw.orientedNeighbors[vertexID]
+	default:
+		return &noTriangleScatterValue
+	}
 }
 
 func (ccw *ClusteringCoefficientWorker) Init() error {
-	ccw.ccValues = make([]serialize.SFloat32, ccw.WContext.GraphData.Vertex.TotalVertexCount())
-	ccw.totalNeighborSet = make([]serialize.MapUint32Struct, ccw.WContext.GraphData.Vertex.TotalVertexCount())
-	ccw.selfNeighborSet = make([]map[serialize.SUint32]struct{}, ccw.WContext.GraphData.VertexCount)
+	if err := validateTriangleMaxStep(options.GetInt(ccw.WContext.Params,
+		"compute.max_step")); err != nil {
+		return err
+	}
+	totalVertices := ccw.WContext.GraphData.Vertex.TotalVertexCount()
+	localVertices := ccw.WContext.GraphData.VertexCount
+	ccw.ccValues = make([]serialize.SFloat32, totalVertices)
+	ccw.degrees = make([]serialize.SUint32, totalVertices)
+	ccw.orientedNeighbors = make([]serialize.SliceUint32, totalVertices)
+	ccw.localNeighbors = make([]serialize.SliceUint32, localVertices)
 	return nil
 }
 
-func (ccw *ClusteringCoefficientWorker) Compute(vertexID uint32, pID int) {
-	_ = pID
-	vertID := vertexID - ccw.WContext.GraphData.VertIDStart
+func (ccw *ClusteringCoefficientWorker) Compute(vertexID uint32, _ int) {
+	localID := vertexID - ccw.WContext.GraphData.VertIDStart
 	switch ccw.WContext.Step {
 	case 1:
-		inEdges := ccw.WContext.GraphData.Edges.GetInEdges(vertID)
-		outEdges := ccw.WContext.GraphData.Edges.GetOutEdges(vertID)
-		ccw.selfNeighborSet[vertID] = make(map[serialize.SUint32]struct{},
-			len(inEdges)+len(outEdges))
-		ccw.totalNeighborSet[vertexID] = make(map[serialize.SUint32]struct{},
-			(len(inEdges)+len(outEdges))/2)
-		for _, nID := range inEdges {
-			if uint32(nID) == vertexID {
-				continue
-			}
-			ccw.selfNeighborSet[vertID][nID] = struct{}{}
-			if uint32(nID) < vertexID {
-				ccw.totalNeighborSet[vertexID][nID] = struct{}{}
-			}
-		}
-		for _, nID := range outEdges {
-			if uint32(nID) == vertexID {
-				continue
-			}
-			ccw.selfNeighborSet[vertID][nID] = struct{}{}
-			if uint32(nID) < vertexID {
-				ccw.totalNeighborSet[vertexID][nID] = struct{}{}
-			}
-		}
+		neighbors := sortedUndirectedNeighbors(vertexID,
+			uint32(len(ccw.degrees)),
+			ccw.WContext.GraphData.Edges.GetInEdges(localID),
+			ccw.WContext.GraphData.Edges.GetOutEdges(localID))
+		ccw.localNeighbors[localID] = neighbors
+		ccw.degrees[vertexID] = serialize.SUint32(len(neighbors))
 	case 2:
-		length := len(ccw.selfNeighborSet[vertID])
-		if length > 1 {
-			var triangleCount serialize.SUint32
-			for fID := range ccw.selfNeighborSet[vertID] {
-				triangleCount += ccw.findCross(ccw.selfNeighborSet[vertID], ccw.totalNeighborSet[fID])
-			}
-			ccw.ccValues[vertexID] = 2 * serialize.SFloat32(triangleCount) /
-				serialize.SFloat32((length)*(length-1))
-		} else {
+		ccw.orientedNeighbors[vertexID] = orientedNeighbors(vertexID,
+			ccw.localNeighbors[localID], ccw.degrees)
+	case 3:
+		degree := len(ccw.localNeighbors[localID])
+		if degree < 2 {
 			ccw.ccValues[vertexID] = 0
+			return
 		}
+		triangles := countVertexTriangles(ccw.localNeighbors[localID],
+			ccw.orientedNeighbors)
+		denominator := float64(degree) * float64(degree-1)
+		ccw.ccValues[vertexID] = serialize.SFloat32(
+			2 * float64(triangles) / denominator)
 	}
 }
 
-func (ccw *ClusteringCoefficientWorker) findCross(a map[serialize.SUint32]struct{}, b map[serialize.SUint32]struct{}) serialize.SUint32 {
-	var count serialize.SUint32 = 0
-	if len(a) > len(b) {
-		for k := range b {
-			if _, ok := a[k]; ok {
-				count++
-			}
-		}
-	} else {
-		for k := range a {
-			if _, ok := b[k]; ok {
-				count++
-			}
-		}
-	}
-	return count
-}
 func (ccw *ClusteringCoefficientWorker) OutputValueType() string {
 	return common.HgValueTypeFloat
 }
@@ -138,5 +120,5 @@ type ClusteringCoefficientMaster struct {
 }
 
 func (ccm *ClusteringCoefficientMaster) Compute() bool {
-	return ccm.MContext.Step != 2
+	return ccm.MContext.Step != triangleComputeSteps
 }

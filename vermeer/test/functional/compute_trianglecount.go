@@ -27,7 +27,7 @@ func (tct *TriangleCountTest) TaskComputeBody() map[string]string {
 	//获取compute任务的body
 	return map[string]string{
 		"compute.algorithm": "triangle_count",
-		"compute.max_step":  "2",
+		"compute.max_step":  "3",
 		"compute.parallel":  "100",
 		"output.file_path":  "./data/" + tct.algoName,
 		"output.type":       "local",
