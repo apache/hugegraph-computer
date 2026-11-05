@@ -27,7 +27,7 @@ func (ct *ClusteringCoefficientTest) TaskComputeBody() map[string]string {
 	//获取compute任务的body
 	return map[string]string{
 		"compute.algorithm": "clustering_coefficient",
-		"compute.max_step":  "2",
+		"compute.max_step":  "3",
 		"compute.parallel":  "100",
 		"output.parallel":   "10",
 		"output.file_path":  "./data/" + ct.algoName,
