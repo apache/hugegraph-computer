@@ -19,7 +19,9 @@ package algorithms
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
+	"sync/atomic"
 	"vermeer/apps/common"
 	"vermeer/apps/compute"
 	"vermeer/apps/options"
@@ -28,12 +30,13 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const closenessUnfinishedValue = "closeness_unfinished"
+
 func init() {
 	Algorithms = append(Algorithms, new(ClosenessCentralityMaker))
 }
 
-//normalized closeness centrality
-
+// normalized closeness centrality
 type ClosenessCentralityMaker struct {
 	compute.AlgorithmMakerBase
 }
@@ -54,131 +57,204 @@ func (cc *ClosenessCentralityMaker) DataNeeded() []string {
 	return []string{}
 }
 
+func validateProbability(name string, value float64) error {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 || value > 1 {
+		return fmt.Errorf("%s must be finite and in (0, 1], got %v", name, value)
+	}
+	return nil
+}
+
+func parseBooleanFlag(name string, value int) (bool, error) {
+	switch value {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be 0 or 1, got %d", name, value)
+	}
+}
+
+func newClosenessDistanceMap(vertexID uint32, capacity int) map[uint32]int32 {
+	distances := make(map[uint32]int32, capacity+1)
+	distances[vertexID] = 0
+	return distances
+}
+
+func closenessScore(distances map[uint32]int32, totalVertices uint32,
+	wfImproved bool) serialize.SFloat32 {
+	if totalVertices <= 1 || len(distances) <= 1 {
+		return 0
+	}
+
+	var distanceSum int64
+	for _, distance := range distances {
+		distanceSum += int64(distance)
+	}
+	if distanceSum <= 0 {
+		return 0
+	}
+
+	reachable := len(distances) - 1
+	score := float64(reachable) / float64(distanceSum)
+	if wfImproved {
+		score *= float64(reachable) / float64(totalVertices-1)
+	}
+	return serialize.SFloat32(score)
+}
+
 type ClosenessCentralityWorker struct {
 	compute.WorkerComputerBase
 	wfImproved      bool
 	sampleRate      float64
-	stopSum         []serialize.SInt32
 	closenessValues []serialize.SFloat32
 	tempEdges       [][]serialize.SUint32
 	dfsOutsideEdge  [][]serialize.SUint32
 	neighborEdges   []serialize.SliceUint32
 	pMap            []map[uint32]int32
+	finished        []bool
+	unfinished      int64
 }
 
 func (ccw *ClosenessCentralityWorker) VertexValue(i uint32) serialize.MarshalAble {
+	if ccw.WContext.Output {
+		return &ccw.closenessValues[i]
+	}
 	if ccw.WContext.Step == 1 {
 		return &ccw.neighborEdges[i]
 	}
-
 	return &ccw.closenessValues[i]
 }
 
+func (ccw *ClosenessCentralityWorker) ValidateOutput() error {
+	cValue, ok := ccw.WContext.CValues[closenessUnfinishedValue]
+	if !ok || cValue.Value == nil {
+		return fmt.Errorf("closeness_centrality output is missing global convergence state")
+	}
+	unfinished, ok := cValue.Value.(serialize.SInt64)
+	if !ok {
+		return fmt.Errorf("closeness_centrality output has invalid convergence state %T",
+			cValue.Value)
+	}
+	if unfinished != 0 {
+		return fmt.Errorf("closeness_centrality did not converge for %d vertices; increase compute.max_step",
+			unfinished)
+	}
+	return nil
+}
+
 func (ccw *ClosenessCentralityWorker) Init() error {
-	ccw.closenessValues = make([]serialize.SFloat32, ccw.WContext.GraphData.Vertex.TotalVertexCount())
-	ccw.neighborEdges = make([]serialize.SliceUint32, ccw.WContext.GraphData.Vertex.TotalVertexCount())
-	ccw.dfsOutsideEdge = make([][]serialize.SUint32, ccw.WContext.GraphData.VertexCount)
-	ccw.stopSum = make([]serialize.SInt32, ccw.WContext.Parallel)
-	ccw.pMap = make([]map[uint32]int32, ccw.WContext.GraphData.VertexCount)
+	sampleRate := options.GetFloat(ccw.WContext.Params,
+		"closeness_centrality.sample_rate")
+	if err := validateProbability("closeness_centrality.sample_rate", sampleRate); err != nil {
+		return err
+	}
+	wfImproved, err := parseBooleanFlag("closeness_centrality.wf_improved",
+		options.GetInt(ccw.WContext.Params, "closeness_centrality.wf_improved"))
+	if err != nil {
+		return err
+	}
+	ccw.sampleRate = sampleRate
+	ccw.wfImproved = wfImproved
+
+	totalVertices := ccw.WContext.GraphData.Vertex.TotalVertexCount()
+	localVertices := ccw.WContext.GraphData.VertexCount
+	ccw.closenessValues = make([]serialize.SFloat32, totalVertices)
+	ccw.neighborEdges = make([]serialize.SliceUint32, totalVertices)
+	ccw.dfsOutsideEdge = make([][]serialize.SUint32, localVertices)
+	ccw.pMap = make([]map[uint32]int32, localVertices)
 	for i := range ccw.pMap {
-		ccw.pMap[i] = make(map[uint32]int32, len(ccw.WContext.GraphData.Edges.GetInEdges(uint32(i))))
-		ccw.pMap[i][uint32(i)] = 0
+		localID := uint32(i)
+		vertexID := ccw.WContext.GraphData.VertIDStart + localID
+		ccw.pMap[i] = newClosenessDistanceMap(vertexID,
+			len(ccw.WContext.GraphData.Edges.GetInEdges(localID)))
 	}
 	ccw.tempEdges = make([][]serialize.SUint32, ccw.WContext.Parallel)
 	for i := range ccw.tempEdges {
 		ccw.tempEdges[i] = make([]serialize.SUint32, 0, 100)
 	}
-	ccw.sampleRate = options.GetFloat(ccw.WContext.Params, "closeness_centrality.sample_rate")
-	if ccw.sampleRate > 1.0 || ccw.sampleRate <= 0 {
-		logrus.Errorf("The param closeness_centrality.sample_rate must be in (0.0, 1.0], actual got '%v",
-			ccw.sampleRate)
-		return fmt.Errorf("the param closeness_centrality.sample_rate must be in (0.0, 1.0], actual got '%v",
-			ccw.sampleRate)
-	}
-	//wf_improved:bool. default true
-	//		If True, scale by the fraction of nodes reachable. This gives the
-	//      Wasserman and Faust improved formula. For single component graphs
-	//      it is the same as the original formula.
-	ccw.wfImproved = true
-	wfImproved := options.GetInt(ccw.WContext.Params, "closeness_centrality.wf_improved")
-	if wfImproved != 1 {
-		ccw.wfImproved = false
-	}
-	ccw.WContext.CreateValue("stop_sum", compute.ValueTypeInt32, compute.CValueActionAggregate)
-	ccw.WContext.SetValue("stop_sum", serialize.SInt32(0))
-	return nil
-}
+	ccw.finished = make([]bool, localVertices)
+	atomic.StoreInt64(&ccw.unfinished, int64(localVertices))
 
-func (ccw *ClosenessCentralityWorker) BeforeStep() {
-	for i := range ccw.stopSum {
-		ccw.stopSum[i] = 0
-	}
+	ccw.WContext.CreateValue(closenessUnfinishedValue, compute.ValueTypeInt64,
+		compute.CValueActionAggregate)
+	ccw.WContext.SetValue(closenessUnfinishedValue, serialize.SInt64(localVertices))
+	return nil
 }
 
 func (ccw *ClosenessCentralityWorker) Compute(vertexID uint32, pID int) {
 	vertID := vertexID - ccw.WContext.GraphData.VertIDStart
+	if ccw.finished[vertID] {
+		return
+	}
+
 	switch ccw.WContext.Step {
 	case 1:
 		inEdges := ccw.WContext.GraphData.Edges.GetInEdges(vertID)
 		ccw.neighborEdges[vertexID] = make([]serialize.SUint32, 0, len(inEdges))
 		for _, edge := range inEdges {
-			if !ccw.sample() || uint32(edge) == vertexID {
+			if !ccw.sample() {
+				continue
+			}
+			if _, seen := ccw.pMap[vertID][uint32(edge)]; seen {
 				continue
 			}
 			ccw.neighborEdges[vertexID] = append(ccw.neighborEdges[vertexID], edge)
 			ccw.pMap[vertID][uint32(edge)] = 1
 		}
 		ccw.dfsOutsideEdge[vertID] = ccw.neighborEdges[vertexID]
-		ccw.stopSum[pID] = 1
 	default:
 		for _, value := range ccw.dfsOutsideEdge[vertID] {
-			for _, nId := range ccw.neighborEdges[value] {
-				if _, ok := ccw.pMap[vertID][uint32(nId)]; !ok {
-					if !ccw.sample() {
-						continue
-					}
-					ccw.pMap[vertID][uint32(nId)] = ccw.pMap[vertID][uint32(value)] + 1
-					ccw.tempEdges[pID] = append(ccw.tempEdges[pID], nId)
-					ccw.stopSum[pID] = 1
+			for _, neighborID := range ccw.neighborEdges[value] {
+				if _, seen := ccw.pMap[vertID][uint32(neighborID)]; seen {
+					continue
 				}
+				ccw.pMap[vertID][uint32(neighborID)] =
+					ccw.pMap[vertID][uint32(value)] + 1
+				ccw.tempEdges[pID] = append(ccw.tempEdges[pID], neighborID)
 			}
 		}
-		ccw.dfsOutsideEdge[vertID] = make([]serialize.SUint32, len(ccw.tempEdges[pID]))
-		copy(ccw.dfsOutsideEdge[vertID], ccw.tempEdges[pID])
+		ccw.dfsOutsideEdge[vertID] = append([]serialize.SUint32(nil),
+			ccw.tempEdges[pID]...)
+		ccw.tempEdges[pID] = ccw.tempEdges[pID][:0]
 	}
-	ccw.tempEdges[pID] = ccw.tempEdges[pID][0:0]
-	var stopSum serialize.SInt32
-	for _, v := range ccw.stopSum {
-		stopSum += v
-	}
-	if stopSum == 0 || options.GetInt(ccw.WContext.Params, "compute.max_step") == int(ccw.WContext.Step) {
-		//计算closenessValues
-		var sum int32
-		for _, v := range ccw.pMap[vertID] {
-			sum += v
-		}
-		if sum > 0 && ccw.WContext.GraphData.Vertex.TotalVertexCount() > 1 {
-			ccw.closenessValues[vertexID] =
-				serialize.SFloat32(len(ccw.pMap[vertID])-1) / serialize.SFloat32(sum)
-			if ccw.wfImproved {
-				ccw.closenessValues[vertexID] *= serialize.SFloat32(len(ccw.pMap[vertID])-1) /
-					serialize.SFloat32(ccw.WContext.GraphData.Vertex.TotalVertexCount()-1)
-			}
-			ccw.closenessValues[vertexID] *= serialize.SFloat32(ccw.sampleRate)
-		}
-	}
-}
-
-func (ccw *ClosenessCentralityWorker) sample() bool {
-	return rand.Float64() < ccw.sampleRate
 }
 
 func (ccw *ClosenessCentralityWorker) AfterStep() {
-	var stopSum serialize.SInt32
-	for i := range ccw.stopSum {
-		stopSum += ccw.stopSum[i]
+	for localID := range ccw.finished {
+		if ccw.finished[localID] || ccw.frontierCanExpand(uint32(localID)) {
+			continue
+		}
+		vertexID := ccw.WContext.GraphData.VertIDStart + uint32(localID)
+		ccw.finishVertex(uint32(localID), vertexID)
 	}
-	ccw.WContext.SetValue("stop_sum", stopSum)
+	ccw.WContext.SetValue(closenessUnfinishedValue,
+		serialize.SInt64(atomic.LoadInt64(&ccw.unfinished)))
+}
+
+func (ccw *ClosenessCentralityWorker) frontierCanExpand(vertID uint32) bool {
+	for _, frontierID := range ccw.dfsOutsideEdge[vertID] {
+		for _, neighborID := range ccw.neighborEdges[frontierID] {
+			if _, seen := ccw.pMap[vertID][uint32(neighborID)]; !seen {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (ccw *ClosenessCentralityWorker) finishVertex(vertID, vertexID uint32) {
+	if ccw.finished[vertID] {
+		return
+	}
+	ccw.closenessValues[vertexID] = closenessScore(ccw.pMap[vertID],
+		ccw.WContext.GraphData.Vertex.TotalVertexCount(), ccw.wfImproved)
+	ccw.finished[vertID] = true
+	atomic.AddInt64(&ccw.unfinished, -1)
+}
+
+func (ccw *ClosenessCentralityWorker) sample() bool {
+	return ccw.sampleRate == 1 || rand.Float64() < ccw.sampleRate
 }
 
 func (ccw *ClosenessCentralityWorker) OutputValueType() string {
@@ -190,7 +266,7 @@ type ClosenessCentralityMaster struct {
 }
 
 func (ccm *ClosenessCentralityMaster) Compute() bool {
-	stopSum := ccm.MContext.GetValue("stop_sum")
-	logrus.Infof("stopSum:%v", stopSum)
-	return stopSum.(serialize.SInt32) != 0
+	unfinished := ccm.MContext.GetValue(closenessUnfinishedValue).(serialize.SInt64)
+	logrus.Infof("closeness unfinished vertices: %v", unfinished)
+	return unfinished != 0
 }
