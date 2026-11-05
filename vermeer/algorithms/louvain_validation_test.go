@@ -22,9 +22,14 @@ import (
 	"strings"
 	"testing"
 	"vermeer/apps/compute"
+	"vermeer/apps/options"
 	"vermeer/apps/serialize"
 	"vermeer/apps/structure"
 )
+
+func init() {
+	options.Init()
+}
 
 func TestIdentityCommunityIDs(t *testing.T) {
 	ids := identityCommunityIDs(4)
