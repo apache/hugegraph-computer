@@ -75,19 +75,31 @@ func parseCycleParameters(params map[string]string, totalVertices uint32) (cycle
 }
 
 func buildCycleRanks(vertexIDs []string) []uint32 {
-	order := make([]uint32, len(vertexIDs))
+	return buildCycleRanksByID(uint32(len(vertexIDs)), func(vertexID uint32) string {
+		return vertexIDs[vertexID]
+	})
+}
+
+// buildCycleRanksByID reads external IDs from their existing graph storage.
+// It intentionally allocates only one temporary uint32 permutation and the
+// retained uint32 rank vector, rather than copying one string header per vertex.
+func buildCycleRanksByID(totalVertices uint32,
+	vertexIDAt func(uint32) string) []uint32 {
+	order := make([]uint32, totalVertices)
 	for vertexID := range order {
 		order[vertexID] = uint32(vertexID)
 	}
 	sort.Slice(order, func(left, right int) bool {
 		leftID := order[left]
 		rightID := order[right]
-		if vertexIDs[leftID] != vertexIDs[rightID] {
-			return vertexIDs[leftID] < vertexIDs[rightID]
+		leftExternalID := vertexIDAt(leftID)
+		rightExternalID := vertexIDAt(rightID)
+		if leftExternalID != rightExternalID {
+			return leftExternalID < rightExternalID
 		}
 		return leftID < rightID
 	})
-	ranks := make([]uint32, len(vertexIDs))
+	ranks := make([]uint32, totalVertices)
 	for rank, vertexID := range order {
 		ranks[vertexID] = uint32(rank)
 	}
