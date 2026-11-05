@@ -47,96 +47,110 @@ func (tc *TriangleCountMaker) DataNeeded() []string {
 	return []string{compute.UseOutEdge}
 }
 
-type TriangleCountWorker struct {
-	compute.WorkerComputerBase
-	triangleCount    []serialize.SUint32
-	totalNeighborSet []serialize.MapUint32Struct
-	selfNeighborSet  []map[serialize.SUint32]struct{}
+// buildTriangleNeighborState treats incoming and outgoing edges as one
+// undirected neighborhood, removes self-loops and duplicate parallel edges,
+// and returns only the lower-ID half for cross-worker exchange. For every
+// triangle incident to vertex v, exactly one of the other two vertices has the
+// larger ID, so intersecting N(v) with each neighbor's lower-ID half counts the
+// triangle once for v.
+func buildTriangleNeighborState(vertexID uint32, inEdges,
+	outEdges serialize.SliceUint32) (map[serialize.SUint32]struct{}, serialize.SliceUint32) {
+	neighbors := make(map[serialize.SUint32]struct{}, len(inEdges)+len(outEdges))
+	lower := make(serialize.SliceUint32, 0, (len(inEdges)+len(outEdges))/2)
+	add := func(neighbor serialize.SUint32) {
+		if uint32(neighbor) == vertexID {
+			return
+		}
+		if _, exists := neighbors[neighbor]; exists {
+			return
+		}
+		neighbors[neighbor] = struct{}{}
+		if uint32(neighbor) < vertexID {
+			lower = append(lower, neighbor)
+		}
+	}
+	for _, neighbor := range inEdges {
+		add(neighbor)
+	}
+	for _, neighbor := range outEdges {
+		add(neighbor)
+	}
+	return neighbors, lower
 }
 
-func (tcw *TriangleCountWorker) VertexValue(i uint32) serialize.MarshalAble {
-	if tcw.WContext.Step == 1 {
-		return &tcw.totalNeighborSet[i]
+func countTriangleMembership(neighbors map[serialize.SUint32]struct{},
+	lowerNeighbors serialize.SliceUint32) serialize.SUint32 {
+	var count serialize.SUint32
+	for _, candidate := range lowerNeighbors {
+		if _, exists := neighbors[candidate]; exists {
+			count++
+		}
 	}
-	return &tcw.triangleCount[i]
+	return count
+}
+
+type TriangleCountWorker struct {
+	compute.WorkerComputerBase
+	triangleCount  []serialize.SUint32
+	lowerNeighbors []serialize.SliceUint32
+	localNeighbors []map[serialize.SUint32]struct{}
+}
+
+func (tcw *TriangleCountWorker) VertexValue(vertexID uint32) serialize.MarshalAble {
+	if tcw.WContext.Output {
+		return &tcw.triangleCount[vertexID]
+	}
+	if tcw.WContext.Step == 1 {
+		return &tcw.lowerNeighbors[vertexID]
+	}
+	return &tcw.triangleCount[vertexID]
 }
 
 func (tcw *TriangleCountWorker) Init() error {
-	tcw.triangleCount = make([]serialize.SUint32, tcw.WContext.GraphData.Vertex.TotalVertexCount())
-	tcw.totalNeighborSet = make([]serialize.MapUint32Struct, tcw.WContext.GraphData.Vertex.TotalVertexCount())
-	tcw.selfNeighborSet = make([]map[serialize.SUint32]struct{}, tcw.WContext.GraphData.VertexCount)
+	totalVertices := tcw.WContext.GraphData.Vertex.TotalVertexCount()
+	localVertices := tcw.WContext.GraphData.VertexCount
+	tcw.triangleCount = make([]serialize.SUint32, totalVertices)
+	// Slice headers are substantially cheaper than one Go map per global
+	// vertex. Only local vertices retain hash sets for membership tests.
+	tcw.lowerNeighbors = make([]serialize.SliceUint32, totalVertices)
+	tcw.localNeighbors = make([]map[serialize.SUint32]struct{}, localVertices)
 	return nil
 }
 
 func (tcw *TriangleCountWorker) Compute(vertexID uint32, pID int) {
 	_ = pID
-	vertID := vertexID - tcw.WContext.GraphData.VertIDStart
+	localID := vertexID - tcw.WContext.GraphData.VertIDStart
 	switch tcw.WContext.Step {
 	case 1:
-		//if tcw.WContext.GraphData.BothEdges != nil {
-		//	tcw.selfNeighborSet[vertID] = make(map[serialize.SUint32]struct{},
-		//		len(tcw.WContext.GraphData.BothEdges[vertID]))
-		//	tcw.totalNeighborSet[vertexID] = make(map[serialize.SUint32]struct{},
-		//		len(tcw.WContext.GraphData.BothEdges[vertID])/2)
-		//	for _, nID := range tcw.WContext.GraphData.BothEdges[vertID] {
-		//		if uint32(nID) == vertexID {
-		//			continue
-		//		}
-		//		tcw.selfNeighborSet[vertID][nID] = struct{}{}
-		//		if uint32(nID) < vertexID {
-		//			tcw.totalNeighborSet[vertexID][nID] = struct{}{}
-		//		}
-		//	}
-		//} else {
-		inEdges := tcw.WContext.GraphData.Edges.GetInEdges(vertID)
-		outEdges := tcw.WContext.GraphData.Edges.GetOutEdges(vertID)
-		tcw.selfNeighborSet[vertID] = make(map[serialize.SUint32]struct{},
-			len(inEdges)+len(outEdges))
-		tcw.totalNeighborSet[vertexID] = make(map[serialize.SUint32]struct{},
-			(len(inEdges)+len(outEdges))/2)
-		for _, nID := range inEdges {
-			if uint32(nID) == vertexID {
-				continue
-			}
-			tcw.selfNeighborSet[vertID][nID] = struct{}{}
-			if uint32(nID) < vertexID {
-				tcw.totalNeighborSet[vertexID][nID] = struct{}{}
-			}
-		}
-		for _, nID := range outEdges {
-			if uint32(nID) == vertexID {
-				continue
-			}
-			tcw.selfNeighborSet[vertID][nID] = struct{}{}
-			if uint32(nID) < vertexID {
-				tcw.totalNeighborSet[vertexID][nID] = struct{}{}
-			}
-		}
-		//}
+		neighbors, lower := buildTriangleNeighborState(vertexID,
+			tcw.WContext.GraphData.Edges.GetInEdges(localID),
+			tcw.WContext.GraphData.Edges.GetOutEdges(localID))
+		tcw.localNeighbors[localID] = neighbors
+		tcw.lowerNeighbors[vertexID] = lower
 	case 2:
-		for fID := range tcw.selfNeighborSet[vertID] {
-			tcw.triangleCount[vertexID] += tcw.findCross(tcw.selfNeighborSet[vertID], tcw.totalNeighborSet[fID])
+		neighbors := tcw.localNeighbors[localID]
+		var count serialize.SUint32
+		for neighborID := range neighbors {
+			if int(neighborID) >= len(tcw.lowerNeighbors) {
+				continue
+			}
+			count += countTriangleMembership(neighbors,
+				tcw.lowerNeighbors[neighborID])
 		}
+		tcw.triangleCount[vertexID] = count
 	}
 }
 
-func (tcw *TriangleCountWorker) findCross(a map[serialize.SUint32]struct{}, b map[serialize.SUint32]struct{}) serialize.SUint32 {
-	var count serialize.SUint32 = 0
-	if len(a) > len(b) {
-		for k := range b {
-			if _, ok := a[k]; ok {
-				count++
-			}
-		}
-	} else {
-		for k := range a {
-			if _, ok := b[k]; ok {
-				count++
-			}
-		}
+func (tcw *TriangleCountWorker) AfterStep() {
+	if tcw.WContext.Step != 2 {
+		return
 	}
-	return count
+	// Output needs only the final count. Release adjacency workspace before the
+	// writer starts so a large graph is not held twice during result export.
+	tcw.lowerNeighbors = nil
+	tcw.localNeighbors = nil
 }
+
 func (tcw *TriangleCountWorker) OutputValueType() string {
 	return common.HgValueTypeInt
 }
