@@ -18,6 +18,7 @@ limitations under the License.
 package algorithms
 
 import (
+	"encoding/binary"
 	"math"
 	"testing"
 	"vermeer/apps/buffer"
@@ -107,108 +108,136 @@ func TestBetweennessScaleAndValidation(t *testing.T) {
 			t.Fatalf("invalid endpoint flag %d accepted", value)
 		}
 	}
-}
-
-func TestBetweennessPartitionCountsStayWorkerLocal(t *testing.T) {
-	workerValues := map[string]map[string]*compute.CValue{
-		"worker-a": {
-			betweennessLocalCountsValue: {
-				ValueType: compute.ValueTypeInt64,
-				Action:    compute.CValueActionNormal,
-				Value:     serialize.SInt64(9),
-			},
-		},
-		"worker-b": {
-			betweennessLocalCountsValue: {
-				ValueType: compute.ValueTypeInt64,
-				Action:    compute.CValueActionNormal,
-				Value:     serialize.SInt64(1),
-			},
-		},
+	if err := validateBetweennessMaxStep(1); err == nil {
+		t.Fatal("compute.max_step=1 was accepted")
 	}
-	counts, err := collectBetweennessPartitionCounts(workerValues)
-	if err != nil {
-		t.Fatalf("collect partition counts: %v", err)
-	}
-	maxLocal, total, err := summarizeBetweennessPartitions(counts)
-	if err != nil {
-		t.Fatalf("summarize partition counts: %v", err)
-	}
-	if maxLocal != 9 || total != 10 || len(counts) != 2 {
-		t.Fatalf("unexpected worker-local counts %v: max=%d total=%d",
-			counts, maxLocal, total)
-	}
-
-	workerValues["worker-b"][betweennessLocalCountsValue].Value =
-		serialize.SliceInt64{9, 1}
-	if _, err := collectBetweennessPartitionCounts(workerValues); err == nil {
-		t.Fatal("a broadcast aggregate slice was accepted as a local partition size")
+	if err := validateBetweennessMaxStep(2); err != nil {
+		t.Fatalf("compute.max_step=2 was rejected: %v", err)
 	}
 }
 
-func TestBetweennessBatchPlanUsesLargestActualPartition(t *testing.T) {
-	maxLocal, total, err := summarizeBetweennessPartitions(
-		serialize.SliceInt64{9, 1, 1})
-	if err != nil {
-		t.Fatalf("partition summary failed: %v", err)
+func TestBetweennessSourceSamplingIsDeterministicAndCompacted(t *testing.T) {
+	first := selectBetweennessSources(100, 10_000, 0.01)
+	second := selectBetweennessSources(100, 10_000, 0.01)
+	if len(first) == 0 || len(first) >= 10_000 {
+		t.Fatalf("unexpected selected source count %d", len(first))
 	}
-	if maxLocal != 9 || total != 11 {
-		t.Fatalf("unexpected partition summary: max=%d total=%d", maxLocal, total)
+	if len(first) != len(second) {
+		t.Fatalf("deterministic selections differ in length: %d vs %d",
+			len(first), len(second))
 	}
-
-	batches, err := planBetweennessBatches(maxLocal, 2, 10)
-	if err != nil {
-		t.Fatalf("batch plan failed: %v", err)
-	}
-	if batches != 5 {
-		t.Fatalf("expected 5 batches for largest partition 9 at parallelism 2, got %d",
-			batches)
-	}
-	counts := make([]int, batches)
-	for localID := 0; localID < int(maxLocal); localID++ {
-		counts[localID%batches]++
-	}
-	for batch, count := range counts {
-		if count > 2 {
-			t.Fatalf("batch %d contains %d sources, parallel target is 2", batch, count)
+	for index, source := range first {
+		if source != second[index] {
+			t.Fatalf("selection differs at %d: %d vs %d",
+				index, source, second[index])
+		}
+		if !sampleBetweennessSource(source, 0.01) {
+			t.Fatalf("unselected source %d was compacted into the work list", source)
 		}
 	}
 }
 
-func TestBetweennessBatchPlanFitsStepBudget(t *testing.T) {
-	batches, err := planBetweennessBatches(1_000_000, 1, 10)
-	if err != nil {
-		t.Fatalf("default-step batch plan failed: %v", err)
+func TestExactModeDoesNotRetainASecondSourceIDArray(t *testing.T) {
+	worker := &BetweennessCentralityWorker{
+		localStart:      50,
+		localCount:      3,
+		allSources:      true,
+		selectedSources: 3,
 	}
-	if batches != 9 {
-		t.Fatalf("default max_step=10 must cap source batches at 9, got %d", batches)
+	if len(worker.sampledSources) != 0 {
+		t.Fatalf("exact mode retained sampled source IDs: %v", worker.sampledSources)
 	}
-	if 1+batches > 10 {
-		t.Fatalf("adjacency plus source batches exceed max_step: %d", 1+batches)
-	}
-
-	batches, err = planBetweennessBatches(9, 2, 3)
-	if err != nil {
-		t.Fatalf("short-step batch plan failed: %v", err)
-	}
-	if batches != 2 {
-		t.Fatalf("max_step=3 must use two source batches, got %d", batches)
-	}
-	if _, err := planBetweennessBatches(1, 1, 1); err == nil {
-		t.Fatal("max_step=1 must be rejected")
+	for index, expected := range []uint32{50, 51, 52} {
+		if got := worker.selectedSource(index); got != expected {
+			t.Fatalf("source %d expected %d, got %d", index, expected, got)
+		}
 	}
 }
 
-func TestBetweennessInactiveBatchPayloadIsConstant(t *testing.T) {
+func TestSplitBetweennessContributionsKeepsLocalAndChunksRemote(t *testing.T) {
+	partial := []float64{0, 1.25, 2.5, 3.75}
+	local, chunks, err := splitBetweennessContributions(partial, 1, 2)
+	if err != nil {
+		t.Fatalf("split contributions: %v", err)
+	}
+	if len(local) != 2 || local[0] != 1.25 || local[1] != 2.5 {
+		t.Fatalf("unexpected local contribution slice: %v", local)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("expected one remote chunk, got %d", len(chunks))
+	}
+	if count := binary.LittleEndian.Uint32(chunks[0].payload[:4]); count != 1 {
+		t.Fatalf("expected one remote record, got %d", count)
+	}
+
+	remote := &BetweennessCentralityWorker{
+		localStart:  3,
+		localCount:  1,
+		localValues: make([]float64, 1),
+	}
+	receiver := betweennessContributionReceiver{worker: remote}
+	if _, err := receiver.Unmarshal(chunks[0].payload); err != nil {
+		t.Fatalf("receive contribution chunk: %v", err)
+	}
+	if math.Abs(remote.localValues[0]-3.75) > 1e-6 {
+		t.Fatalf("remote contribution expected 3.75, got %v", remote.localValues[0])
+	}
+}
+
+func TestBetweennessContributionChunksStayBounded(t *testing.T) {
+	partial := make([]float64, maxBetweennessChunkRecords+5)
+	for index := range partial {
+		partial[index] = float64(index + 1)
+	}
+	_, chunks, err := splitBetweennessContributions(partial, 0, 0)
+	if err != nil {
+		t.Fatalf("split bounded chunks: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected two chunks, got %d", len(chunks))
+	}
+	maximum := 4 + maxBetweennessChunkRecords*betweennessRecordSize
+	for index, chunk := range chunks {
+		if chunk.PredictSize() > maximum {
+			t.Fatalf("chunk %d has %d bytes, maximum is %d",
+				index, chunk.PredictSize(), maximum)
+		}
+		if chunk.PredictSize() >= 2*1024*1024 {
+			t.Fatalf("chunk %d is not scatter-buffer bounded: %d bytes",
+				index, chunk.PredictSize())
+		}
+	}
+}
+
+func TestBetweennessContributionChunkRejectsTruncation(t *testing.T) {
+	payload := make([]byte, 4)
+	binary.LittleEndian.PutUint32(payload, 1)
+	var chunk betweennessContributionChunk
+	if _, err := chunk.Unmarshal(payload); err == nil {
+		t.Fatal("truncated contribution chunk was accepted")
+	}
+
+	worker := &BetweennessCentralityWorker{
+		localCount:  1,
+		localValues: make([]float64, 1),
+	}
+	receiver := betweennessContributionReceiver{worker: worker}
+	if _, err := receiver.Unmarshal(payload); err == nil {
+		t.Fatal("receiver accepted a truncated contribution chunk")
+	}
+}
+
+func TestBetweennessInactiveScatterPayloadIsConstant(t *testing.T) {
 	var encoded buffer.EncodeBuffer
 	encoded.Init(1024)
 	offset := serialize.SUint32(100)
 	if err := encoded.Marshal(&offset); err != nil {
 		t.Fatalf("marshal offset: %v", err)
 	}
-	for i := 0; i < 10000; i++ {
-		if err := encoded.Marshal(&noBetweennessVertexValue); err != nil {
-			t.Fatalf("marshal empty value %d: %v", i, err)
+	empty := &betweennessContributionReceiver{}
+	for index := 0; index < 10_000; index++ {
+		if err := encoded.Marshal(empty); err != nil {
+			t.Fatalf("marshal empty value %d: %v", index, err)
 		}
 	}
 	if got := len(encoded.PayLoad()); got != 4 {
@@ -216,56 +245,99 @@ func TestBetweennessInactiveBatchPayloadIsConstant(t *testing.T) {
 	}
 }
 
-func TestBetweennessSourceSamplingIsDeterministic(t *testing.T) {
-	for vertexID := uint32(0); vertexID < 100; vertexID++ {
-		first := sampleBetweennessSource(vertexID, 0.25)
-		second := sampleBetweennessSource(vertexID, 0.25)
-		if first != second {
-			t.Fatalf("source %d sampling is not deterministic", vertexID)
-		}
-		if !sampleBetweennessSource(vertexID, 1) {
-			t.Fatalf("exact mode skipped source %d", vertexID)
-		}
+func TestBetweennessOutgoingChunksUseLocalVertexWindows(t *testing.T) {
+	worker := &BetweennessCentralityWorker{
+		localStart:     10,
+		localCount:     2,
+		outgoingChunks: make([]betweennessContributionChunk, 5),
 	}
-}
-
-func TestSumBetweennessPartials(t *testing.T) {
-	result, err := sumBetweennessPartials([]serialize.SliceFloat32{
-		{1, 2, 3},
-		{0.5, 1, 1.5},
-	}, 3)
-	if err != nil {
-		t.Fatalf("sum partials: %v", err)
-	}
-	expected := []float64{1.5, 3, 4.5}
-	for vertexID, value := range result {
-		if math.Abs(float64(value)-expected[vertexID]) > 1e-6 {
-			t.Fatalf("vertex %d expected %v, got %v",
-				vertexID, expected[vertexID], value)
-		}
-	}
-	if _, err := sumBetweennessPartials([]serialize.SliceFloat32{{1}}, 2); err == nil {
-		t.Fatal("mismatched partial length was accepted")
-	}
-}
-
-func TestBetweennessOutputRequiresFinalGlobalVector(t *testing.T) {
-	worker := &BetweennessCentralityWorker{totalVertices: 3}
 	context := worker.MakeContext(nil)
-	context.CreateValue(betweennessFinalValue, compute.ValueTypeSliceFloat32,
-		compute.CValueActionNormal)
-	context.SetValue(betweennessFinalValue, serialize.SliceFloat32{})
-	if err := worker.ValidateOutput(); err == nil {
-		t.Fatal("expected missing global result to reject output")
+	context.Step = 2
+	context.CreateValue(betweennessStopValue, compute.ValueTypeInt32,
+		compute.CValueActionAggregate)
+	context.SetValue(betweennessStopValue, serialize.SInt32(1))
+	worker.receiver.worker = worker
+
+	cases := []struct {
+		window int
+		offset int
+	}{
+		{window: 2, offset: 2},
+		{window: 2, offset: 4},
+		{window: 1, offset: 5},
+	}
+	for _, test := range cases {
+		if got := worker.outgoingWindowCount(); got != test.window {
+			t.Fatalf("offset %d expected window %d, got %d",
+				worker.outgoingOffset, test.window, got)
+		}
+		if _, ok := worker.VertexValue(10).(*betweennessContributionChunk); !ok {
+			t.Fatalf("offset %d did not expose a bounded contribution chunk",
+				worker.outgoingOffset)
+		}
+		worker.AfterStep()
+		if worker.outgoingOffset != test.offset {
+			t.Fatalf("expected outgoing offset %d, got %d",
+				test.offset, worker.outgoingOffset)
+		}
+		context.Step++
+	}
+	if stop := context.GetValue(betweennessStopValue).(serialize.SInt32); stop != 0 {
+		t.Fatalf("final chunk window did not stop: %d", stop)
+	}
+}
+
+func TestBetweennessMasterCompletesOnlyAfterScatterDrains(t *testing.T) {
+	master := &BetweennessCentralityMaster{}
+	context := master.MakeContext(map[string]string{"compute.max_step": "10"})
+	if err := master.Init(); err != nil {
+		t.Fatalf("master init: %v", err)
+	}
+	context.CreateValue(betweennessStopValue, compute.ValueTypeInt32,
+		compute.CValueActionAggregate)
+	context.SetValue(betweennessStopValue, serialize.SInt32(1))
+	if !master.Compute() {
+		t.Fatal("master stopped while a worker still had contribution chunks")
+	}
+	if complete := context.GetValue(betweennessCompleteValue).(serialize.SInt32); complete != 0 {
+		t.Fatalf("completion was published early: %d", complete)
 	}
 
-	expected := serialize.SliceFloat32{0, 1, 0}
-	context.SetValue(betweennessFinalValue, expected)
-	if err := worker.ValidateOutput(); err != nil {
-		t.Fatalf("completed global result rejected: %v", err)
+	context.SetValue(betweennessStopValue, serialize.SInt32(0))
+	if master.Compute() {
+		t.Fatal("master continued after every worker drained its chunks")
 	}
-	if len(worker.betweennessValues) != len(expected) ||
-		worker.betweennessValues[1] != expected[1] {
-		t.Fatalf("global result was not installed: %v", worker.betweennessValues)
+	if complete := context.GetValue(betweennessCompleteValue).(serialize.SInt32); complete != 1 {
+		t.Fatalf("completion was not published: %d", complete)
+	}
+}
+
+func TestBetweennessOutputRequiresScalarCompletionAndUsesLocalRange(t *testing.T) {
+	worker := &BetweennessCentralityWorker{
+		localStart:  10,
+		localCount:  2,
+		localValues: []float64{1.5, 2.5},
+	}
+	context := worker.MakeContext(nil)
+	context.CreateValue(betweennessCompleteValue, compute.ValueTypeInt32,
+		compute.CValueActionNormal)
+	context.SetValue(betweennessCompleteValue, serialize.SInt32(0))
+	if err := worker.ValidateOutput(); err == nil {
+		t.Fatal("incomplete scalar state was accepted")
+	}
+
+	context.SetValue(betweennessCompleteValue, serialize.SInt32(1))
+	if err := worker.ValidateOutput(); err != nil {
+		t.Fatalf("completed local output rejected: %v", err)
+	}
+	context.Output = true
+	for vertexID, expected := range map[uint32]float32{10: 1.5, 11: 2.5} {
+		value, ok := worker.VertexValue(vertexID).(*serialize.SFloat32)
+		if !ok {
+			t.Fatalf("vertex %d output type is %T", vertexID, worker.VertexValue(vertexID))
+		}
+		if float32(*value) != expected {
+			t.Fatalf("vertex %d expected %v, got %v", vertexID, expected, *value)
+		}
 	}
 }
