@@ -85,11 +85,10 @@ func (cdw *CycleDetectionWorker) Init() error {
 	cdw.inEdges = make([]serialize.SliceUint32, totalVertices)
 
 	if parameters.mode != Boolean {
-		vertexIDs := make([]string, totalVertices)
-		for vertexID := uint32(0); vertexID < totalVertices; vertexID++ {
-			vertexIDs[vertexID] = cdw.WContext.GraphData.Vertex.GetVertex(vertexID).ID
-		}
-		cdw.cycleRanks = buildCycleRanks(vertexIDs)
+		cdw.cycleRanks = buildCycleRanksByID(totalVertices,
+			func(vertexID uint32) string {
+				return cdw.WContext.GraphData.Vertex.GetVertex(vertexID).ID
+			})
 	}
 	parallel := cdw.WContext.Parallel
 	if parallel <= 0 {
