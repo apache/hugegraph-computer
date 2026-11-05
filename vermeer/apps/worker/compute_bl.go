@@ -453,6 +453,14 @@ func (cb *ComputeBl) StepEnd(taskID int32, workerName string) {
 }
 
 func (cb *ComputeBl) RunOutput(taskID int32) {
+	cb.runOutput(taskID, nil)
+}
+
+func (cb *ComputeBl) RunOutputWithValues(taskID int32, computeValues map[string][]byte) {
+	cb.runOutput(taskID, computeValues)
+}
+
+func (cb *ComputeBl) runOutput(taskID int32, computeValues map[string][]byte) {
 	defer func() {
 		if r := recover(); r != nil {
 			cb.SetStatusError(taskID, fmt.Sprintf("RunOutput panic recover panic:%v, stack message: %s", r,
@@ -464,6 +472,9 @@ func (cb *ComputeBl) RunOutput(taskID int32) {
 	computeTask := ComputeTaskMgr.GetTask(taskID)
 	if !cb.CheckAction(computeTask) {
 		return
+	}
+	if computeValues != nil {
+		computeTask.ComputeWorker.Context().UnmarshalValues(computeValues)
 	}
 	if validator, ok := computeTask.ComputeWorker.(interface{ ValidateOutput() error }); ok {
 		if err := validator.ValidateOutput(); err != nil {
