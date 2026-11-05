@@ -128,6 +128,9 @@ func (lw *LouvainWeightedWorker) Init() error {
 	lw.inEdges = make([]serialize.MapUint32Float32, lw.WContext.GraphData.Vertex.TotalVertexCount())
 
 	lw.resolution = options.GetFloat(lw.WContext.Params, "louvain.resolution")
+	if err := validatePositiveFinite("louvain.resolution", lw.resolution); err != nil {
+		return err
+	}
 	lw.parallel = lw.WContext.Parallel
 	if lw.parallel <= 0 {
 		logrus.Infof("parallel value must be larger than 0, get: %v, set to defalut value :1", lw.parallel)
@@ -168,6 +171,32 @@ func (lw *LouvainWeightedWorker) Init() error {
 			return fmt.Errorf("illegal edge weighted property type:%v", lw.edgeProperty)
 		}
 		lw.useProperty = true
+		if err := lw.validateEdgeWeights(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (lw *LouvainWeightedWorker) validateEdgeWeights() error {
+	for localID := uint32(0); localID < lw.WContext.GraphData.VertexCount; localID++ {
+		inEdges := lw.WContext.GraphData.Edges.GetInEdges(localID)
+		for edgeIndex := range inEdges {
+			var weight float64
+			switch lw.propertyType {
+			case structure.ValueTypeInt32:
+				weight = float64(lw.WContext.GraphData.InEdgesProperty.GetInt32Value(
+					lw.edgeProperty, localID, uint32(edgeIndex)))
+			case structure.ValueTypeFloat32:
+				weight = float64(lw.WContext.GraphData.InEdgesProperty.GetFloat32Value(
+					lw.edgeProperty, localID, uint32(edgeIndex)))
+			}
+			if err := validateNonNegativeFinite("louvain edge weight", weight); err != nil {
+				vertexID := lw.WContext.GraphData.VertIDStart + localID
+				return fmt.Errorf("property %q at vertex %d, incoming edge %d: %w",
+					lw.edgeProperty, vertexID, edgeIndex, err)
+			}
+		}
 	}
 	return nil
 }
@@ -191,6 +220,18 @@ func (lw *LouvainWeightedWorker) BeforeStep() {
 			lw.communities[serialize.SUint32(vertexID)].sigmaTot = wgtSum
 			lw.firstStepKI[vertexID] = wgtSum
 			lw.firstStepCommID[vertexID] = serialize.SUint32(vertexID)
+		}
+		if lw.edgeNums == 0 {
+			lw.nodeID = identityCommunityIDs(lw.WContext.GraphData.Vertex.TotalVertexCount())
+			lw.nodes = make(map[serialize.SUint32]*louvainNode)
+			lw.communities = make(map[serialize.SUint32]*community)
+			lw.firstStep = false
+			lw.firstStepKI = nil
+			lw.firstStepCommID = nil
+			lw.neighborEdges = nil
+			lw.WContext.SetValue("mod_value", serialize.SFloat32(0))
+			atomic.StoreInt32(&lw.outputReady, 1)
+			return
 		}
 		lw.resolution /= lw.edgeNums
 		logrus.Infof("edge nums:%v", lw.edgeNums)
@@ -335,6 +376,10 @@ func (lw *LouvainWeightedWorker) Compute(vertexID uint32, pID int) {
 				}
 
 			}
+			if weight == 0 {
+				continue
+			}
+
 			lw.inEdges[vertexID][edge] += weight
 		}
 	} else if lw.WContext.Step == 2 {
@@ -351,10 +396,19 @@ func (lw *LouvainWeightedWorker) Compute(vertexID uint32, pID int) {
 			}
 			trimMap[edge] = struct{}{}
 			wgt := lw.inEdges[edge][serialize.SUint32(vertexID)]
+			if wgt == 0 {
+				continue
+			}
 			lw.neighborEdges[vertexID][edge] += wgt
 		}
 	} else {
 		if lw.firstStep {
+			// Zero-weight edges are removed while building neighborEdges. A vertex
+			// with no remaining effective edge is an identity community and must
+			// not enter the modularity optimization path.
+			if len(lw.neighborEdges[vertexID]) == 0 {
+				return
+			}
 			//以vertex为基本单元计算
 			currCommID := lw.firstStepCommID[vertexID]
 			kI := lw.firstStepKI[vertexID]
@@ -572,10 +626,7 @@ func (lw *LouvainWeightedWorker) initLouvainNode() {
 	//gen a new graph for new step
 	//可以并行
 	lw.nodes = make(map[serialize.SUint32]*louvainNode, len(lw.communities))
-	lw.nodeID = make([]serialize.SUint32, lw.WContext.GraphData.Vertex.TotalVertexCount())
-	for i := range lw.nodeID {
-		lw.nodeID[i] = serialize.SUint32(i)
-	}
+	lw.nodeID = identityCommunityIDs(lw.WContext.GraphData.Vertex.TotalVertexCount())
 	locker := &sync.Mutex{}
 	commIDs := make([]serialize.SUint32, 0, len(lw.communities))
 	for commID := range lw.communities {
@@ -704,7 +755,13 @@ type LouvainWeightedMaster struct {
 
 func (lm *LouvainWeightedMaster) Init() error {
 	lm.threshold = options.GetFloat(lm.MContext.Params, "louvain.threshold")
+	if err := validateNonNegativeFinite("louvain.threshold", lm.threshold); err != nil {
+		return err
+	}
 	lm.maxStep = options.GetInt(lm.MContext.Params, "louvain.step")
+	if err := validatePositiveInt("louvain.step", lm.maxStep); err != nil {
+		return err
+	}
 	lm.prevModValue = math.MinInt32
 	lm.louvainStep = 1
 	return nil
